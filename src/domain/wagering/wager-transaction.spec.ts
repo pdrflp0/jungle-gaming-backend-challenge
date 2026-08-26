@@ -173,6 +173,18 @@ describe('transicoes de estado', () => {
     expect(() => bet.markPendingReference()).toThrow(InvalidTransactionStateError);
   });
 
+  test('markPendingReference tambem e valido para WIN quando ela forneceu uma referencia opcional', () => {
+    const win = WagerTransaction.create(
+      baseProps({ kind: WagerTransactionKind.Win, referenceExternalTransactionId: 'ext-bet' }),
+    );
+    win.markPendingReference();
+    expect(win.status).toBe(WagerTransactionStatus.PendingReference);
+
+    // sem referencia, WIN nao tem o que esperar.
+    const winSemReferencia = WagerTransaction.create(baseProps({ kind: WagerTransactionKind.Win }));
+    expect(() => winSemReferencia.markPendingReference()).toThrow(InvalidTransactionStateError);
+  });
+
   test('markPendingReference rejeita uma segunda chamada quando ja esta em PENDING_REFERENCE', () => {
     const refund = WagerTransaction.create(
       baseProps({
@@ -281,6 +293,54 @@ describe('ledgerDirectionFor', () => {
 
     const bet = WagerTransaction.create(baseProps({ kind: WagerTransactionKind.Bet }));
     expect(bet.ledgerDirectionFor()).toBe(LedgerDirection.Debit);
+  });
+
+  test('WIN com referencia valida e CREDIT mesmo com valor diferente da BET (premio != aposta)', () => {
+    const bet = WagerTransaction.create(
+      baseProps({ id: 'tx-bet', externalTransactionId: 'ext-bet', money: Money.from({ amount: '25.00', currency: BRL }) }),
+    );
+    bet.markProcessed(undefined, NOW);
+
+    const win = WagerTransaction.create(
+      baseProps({
+        id: 'tx-win',
+        kind: WagerTransactionKind.Win,
+        referenceExternalTransactionId: 'ext-bet',
+        money: Money.from({ amount: '90.00', currency: BRL }), // premio bem maior que a aposta
+      }),
+    );
+
+    expect(win.ledgerDirectionFor(bet)).toBe(LedgerDirection.Credit);
+  });
+
+  test('WIN com referencia de kind errado lanca InvalidReferenceError', () => {
+    const loss = WagerTransaction.create(
+      baseProps({ id: 'tx-loss', kind: WagerTransactionKind.Loss, externalTransactionId: 'ext-loss' }),
+    );
+    loss.markProcessed(undefined, NOW);
+
+    const win = WagerTransaction.create(
+      baseProps({ id: 'tx-win', kind: WagerTransactionKind.Win, referenceExternalTransactionId: 'ext-loss' }),
+    );
+
+    expect(() => win.ledgerDirectionFor(loss)).toThrow(InvalidReferenceError);
+  });
+
+  test('WIN com referencia de moeda diferente lanca InvalidReferenceError', () => {
+    const bet = WagerTransaction.create(
+      baseProps({
+        id: 'tx-bet',
+        externalTransactionId: 'ext-bet',
+        money: Money.from({ amount: '25.00', currency: 'USD' }),
+      }),
+    );
+    bet.markProcessed(undefined, NOW);
+
+    const win = WagerTransaction.create(
+      baseProps({ id: 'tx-win', kind: WagerTransactionKind.Win, referenceExternalTransactionId: 'ext-bet' }),
+    );
+
+    expect(() => win.ledgerDirectionFor(bet)).toThrow(InvalidReferenceError);
   });
 
   test('LOSS lanca LossHasNoLedgerEntryError', () => {

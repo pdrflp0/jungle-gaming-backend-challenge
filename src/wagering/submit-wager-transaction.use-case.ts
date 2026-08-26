@@ -16,8 +16,10 @@ import {
   MoneyAmountOverflowError,
 } from '../domain/money/money';
 import { InsufficientFundsError, WalletCurrencyMismatchError } from '../domain/wallet/wallet';
+import { LedgerDirection } from '../domain/wallet/wallet-ledger-entry';
 import {
   FailureCode,
+  InvalidReferenceError,
   InvalidWagerAmountError,
   MissingReferenceError,
   OpeningIsInternalError,
@@ -32,21 +34,28 @@ import {
   insertLedgerEntry,
   insertPendingWagerTransaction,
   rollbackToSavepoint,
+  selectExistingReversal,
   selectWagerTransactionByIdempotencyKey,
+  selectWagerTransactionByProviderAndExternalId,
   selectWalletForUpdate,
   updateWagerTransactionOutcome,
+  updateWagerTransactionPending,
   updateWalletBalance,
+  wagerTransactionRowToDomain,
   walletRowToDomain,
   WagerTransactionRow,
 } from './wager-transaction.sql';
 
+/** WIN/REFUND/ROLLBACK podem envolver referencia; BET e LOSS nunca olham para ela. */
+const REFERENCE_AWARE_KINDS = [WagerTransactionKind.Win, WagerTransactionKind.Refund, WagerTransactionKind.Rollback];
+
 export interface SubmitWagerTransactionResponse {
-  httpStatus: 200 | 201;
+  httpStatus: 200 | 201 | 202;
   body: {
     transactionId: string;
     status: string;
-    balance: { amount: string; currency: string };
     idempotentReplay: boolean;
+    balance?: { amount: string; currency: string };
     failureCode?: string;
   };
 }
@@ -85,6 +94,7 @@ export class SubmitWagerTransactionUseCase {
       gameId: dto.gameId,
       kind: dto.kind,
       money: dto.money,
+      referenceExternalTransactionId: dto.referenceExternalTransactionId,
     });
 
     // Passo opcional/otimizacao: se a key ja existe, resolve sem abrir transacao
@@ -122,8 +132,9 @@ export class SubmitWagerTransactionUseCase {
         playerId: dto.playerId,
         roundId: dto.roundId,
         gameId: dto.gameId,
-        kind: WagerTransactionKind.Bet,
+        kind: dto.kind as WagerTransactionKind,
         money,
+        referenceExternalTransactionId: dto.referenceExternalTransactionId,
         createdAt: now,
       });
     } catch (error) {
@@ -140,9 +151,11 @@ export class SubmitWagerTransactionUseCase {
     let walletNotFound = false;
     let existingAfterConflict: WagerTransactionRow | undefined;
     let providerExternalConflict = false;
-    let outcome: { status: WagerTransactionStatus; balance: Money } | undefined;
+    let outcome: { status: WagerTransactionStatus; balance?: Money } | undefined;
 
     await this.em.transactional(async (em) => {
+      // 1. trava a wallet primeiro — e o que serializa duas reversoes
+      // concorrentes da mesma referencia (ambas disputam a MESMA wallet).
       const walletRow = await selectWalletForUpdate(em, dto.walletId);
       if (!walletRow) {
         walletNotFound = true;
@@ -183,25 +196,78 @@ export class SubmitWagerTransactionUseCase {
       if (walletRow.player_id !== dto.playerId) {
         // wallet existe, mas pertence a outro jogador — nao toca saldo nem ledger.
         transaction.reject(FailureCode.PlayerMismatch);
-      } else {
-        try {
-          const ledgerEntry = wallet.debit({
-            money: transaction.money,
-            transactionId: transaction.id,
-            entryId: randomUUID(),
-            now,
-          });
-          transaction.markProcessed(undefined, now);
+        await updateWagerTransactionOutcome(em, transaction, wallet.balance);
+        outcome = { status: transaction.status, balance: wallet.balance };
+        return;
+      }
+
+      if (transaction.kind === WagerTransactionKind.Loss) {
+        transaction.markProcessed(undefined, now);
+        await updateWagerTransactionOutcome(em, transaction, wallet.balance);
+        outcome = { status: transaction.status, balance: wallet.balance };
+        return;
+      }
+
+      // 2. resolve a referencia (se essa kind olha para referencia e uma foi
+      // fornecida). BET nunca entra aqui, mesmo que receba o campo por engano.
+      const shouldResolveReference = REFERENCE_AWARE_KINDS.includes(transaction.kind) && transaction.hasReference();
+      const referenceRow = shouldResolveReference
+        ? await selectWagerTransactionByProviderAndExternalId(
+            em,
+            dto.providerId,
+            transaction.referenceExternalTransactionId as string,
+          )
+        : undefined;
+
+      if (shouldResolveReference && !referenceRow) {
+        transaction.markPendingReference();
+        await updateWagerTransactionPending(em, transaction);
+        outcome = { status: transaction.status };
+        return;
+      }
+
+      const referenceDomain = referenceRow ? wagerTransactionRowToDomain(referenceRow) : undefined;
+
+      try {
+        const direction = transaction.ledgerDirectionFor(referenceDomain);
+
+        // 3. verifica reversao anterior — so se aplica a REFUND/ROLLBACK, que
+        // sao os unicos kinds com a constraint UNIQUE(reference_transaction_id, kind).
+        let alreadyReversed = false;
+        if (
+          referenceDomain &&
+          (transaction.kind === WagerTransactionKind.Refund || transaction.kind === WagerTransactionKind.Rollback)
+        ) {
+          alreadyReversed = await selectExistingReversal(em, referenceDomain.id, transaction.kind);
+        }
+
+        // 4. aplica ou rejeita.
+        if (alreadyReversed) {
+          transaction.reject(FailureCode.ReferenceAlreadyReversed);
+        } else {
+          const ledgerEntry =
+            direction === LedgerDirection.Credit
+              ? wallet.credit({ money: transaction.money, transactionId: transaction.id, entryId: randomUUID(), now })
+              : wallet.debit({ money: transaction.money, transactionId: transaction.id, entryId: randomUUID(), now });
+          transaction.markProcessed(referenceDomain?.id, now);
           await updateWalletBalance(em, wallet);
           await insertLedgerEntry(em, ledgerEntry);
-        } catch (error) {
-          if (error instanceof InsufficientFundsError) {
-            transaction.reject(FailureCode.InsufficientFunds);
-          } else if (error instanceof WalletCurrencyMismatchError) {
-            transaction.reject(FailureCode.CurrencyMismatch);
-          } else {
-            throw error;
-          }
+        }
+      } catch (error) {
+        if (error instanceof InvalidReferenceError) {
+          transaction.reject(FailureCode.InvalidReference);
+        } else if (error instanceof InsufficientFundsError) {
+          transaction.reject(
+            transaction.kind === WagerTransactionKind.Rollback
+              ? FailureCode.ReversalWouldMakeBalanceNegative
+              : FailureCode.InsufficientFunds,
+          );
+        } else if (error instanceof WalletCurrencyMismatchError) {
+          transaction.reject(FailureCode.CurrencyMismatch);
+        } else if (error instanceof MoneyAmountOverflowError) {
+          transaction.reject(FailureCode.BalanceLimitExceeded);
+        } else {
+          throw error;
         }
       }
 
@@ -228,10 +294,17 @@ export class SubmitWagerTransactionUseCase {
       throw new Error('Unexpected: wager transaction processing produced no outcome');
     }
 
+    if (outcome.status === WagerTransactionStatus.PendingReference) {
+      return {
+        httpStatus: 202,
+        body: { transactionId: transaction.id, status: outcome.status, idempotentReplay: false },
+      };
+    }
+
     const body = {
       transactionId: transaction.id,
       status: outcome.status,
-      balance: outcome.balance.toJSON(),
+      balance: outcome.balance?.toJSON(),
       idempotentReplay: false,
       ...(transaction.failureCode ? { failureCode: transaction.failureCode } : {}),
     };
@@ -251,10 +324,21 @@ export class SubmitWagerTransactionUseCase {
       });
     }
 
-    // Uma BET terminal (PROCESSED ou REJECTED) sempre grava seu saldo
-    // observado (ver updateWagerTransactionOutcome). Se estiver faltando,
-    // e inconsistencia interna real — falha com erro claro, nunca inventa
-    // um resultado financeiro (nada de "?? 0.00" aqui).
+    // PENDING_REFERENCE ainda nao tem resultado financeiro nenhum — nada de
+    // balance/failureCode aqui. No Bloco 7b, depois que o worker resolver a
+    // referencia (PROCESSED ou REJECTED), um novo replay ja vai cair no ramo
+    // abaixo e devolver o saldo historico normalmente.
+    if (row.status === WagerTransactionStatus.PendingReference) {
+      return {
+        httpStatus: 202,
+        body: { transactionId: row.id, status: row.status, idempotentReplay: true },
+      };
+    }
+
+    // Uma BET/WIN/REFUND/ROLLBACK terminal (PROCESSED ou REJECTED) sempre
+    // grava seu saldo observado (ver updateWagerTransactionOutcome). Se
+    // estiver faltando, e inconsistencia interna real — falha com erro
+    // claro, nunca inventa um resultado financeiro (nada de "?? 0.00" aqui).
     if (row.result_balance_amount === null || row.result_balance_currency === null) {
       throw new Error(
         `Wager transaction ${row.id} is terminal (status=${row.status}) but has no recorded result balance`,

@@ -15,8 +15,8 @@
     "db:up": "docker compose up -d postgres",
     "db:down": "docker compose down",
     "db:verify": "bun run scripts/verify-database.ts",
-    "test:integration": "bun test ./src/wallets/open-wallet.integration.ts ./src/wagering/process-bet.integration.ts",
-    "test:concurrency": "bun test ./src/wagering/process-bet.concurrency.ts ./src/wagering/idempotency.concurrency.ts",
+    "test:integration": "bun test ./src/wallets/open-wallet.integration.ts ./src/wagering/process-bet.integration.ts ./src/wagering/wagering.integration.ts",
+    "test:concurrency": "bun test ./src/wagering/process-bet.concurrency.ts ./src/wagering/idempotency.concurrency.ts ./src/wagering/reference-reuse.concurrency.ts",
     "migration:up": "mikro-orm migration:up",
     "migration:down": "mikro-orm migration:down"
   },

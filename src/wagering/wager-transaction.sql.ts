@@ -111,6 +111,41 @@ export async function selectWalletForUpdate(em: EntityManager, walletId: string)
   return rows[0];
 }
 
+/** Resolve uma referencia (REFUND/ROLLBACK/WIN opcional) por provider + externalTransactionId. */
+export async function selectWagerTransactionByProviderAndExternalId(
+  em: EntityManager,
+  providerId: string,
+  externalTransactionId: string,
+): Promise<WagerTransactionRow | undefined> {
+  const rows = await execute<WagerTransactionRow[]>(
+    em,
+    'SELECT * FROM wager_transactions WHERE provider_id = ? AND external_transaction_id = ?',
+    [providerId, externalTransactionId],
+  );
+  return rows[0];
+}
+
+/**
+ * Existe algum REFUND/ROLLBACK ja apontando para essa referencia? Chamado
+ * DEPOIS de travar a wallet (a mesma wallet que a referencia pertence) — o
+ * lock serializa duas reversoes concorrentes da mesma referencia, entao esta
+ * consulta ja e garantia real aqui, nao so otimizacao (a constraint UNIQUE do
+ * banco continua existindo como ultima defesa, mas nao deveria ser atingida
+ * na pratica com essa ordem).
+ */
+export async function selectExistingReversal(
+  em: EntityManager,
+  referenceTransactionId: string,
+  kind: WagerTransactionKind,
+): Promise<boolean> {
+  const rows = await execute<{ found: boolean }[]>(
+    em,
+    'SELECT EXISTS(SELECT 1 FROM wager_transactions WHERE reference_transaction_id = ? AND kind = ?) AS found',
+    [referenceTransactionId, kind],
+  );
+  return rows[0].found;
+}
+
 export async function createSavepoint(em: EntityManager, name: string): Promise<void> {
   await execute(em, `SAVEPOINT ${name}`);
 }
@@ -174,6 +209,11 @@ export async function insertLedgerEntry(em: EntityManager, entry: WalletLedgerEn
       entry.createdAt,
     ],
   );
+}
+
+/** So marca PENDING_REFERENCE — nao mexe em processed_at/failure_code/result_balance, que ficam NULL. */
+export async function updateWagerTransactionPending(em: EntityManager, tx: WagerTransaction): Promise<void> {
+  await execute(em, 'UPDATE wager_transactions SET status = ? WHERE id = ?', [tx.status, tx.id]);
 }
 
 export async function updateWagerTransactionOutcome(

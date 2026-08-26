@@ -26,6 +26,7 @@ export enum FailureCode {
   ReferenceAlreadyReversed = 'REFERENCE_ALREADY_REVERSED',
   ReversalWouldMakeBalanceNegative = 'REVERSAL_WOULD_MAKE_BALANCE_NEGATIVE',
   InvalidReference = 'INVALID_REFERENCE',
+  BalanceLimitExceeded = 'BALANCE_LIMIT_EXCEEDED',
   InternalError = 'INTERNAL_ERROR',
 }
 
@@ -266,7 +267,10 @@ export class WagerTransaction {
       throw new InvalidTransactionStateError(this._status);
     }
 
-    if (!this.requiresReference()) {
+    // Baseado no campo de verdade (existe uma referencia para esperar?), nao
+    // no kind — WIN pode ter uma referencia opcional e tambem precisa poder
+    // esperar por ela, mesmo nao sendo um kind que "exige" referencia.
+    if (!this.hasReference()) {
       throw new InvalidTransactionStateError(this._status);
     }
 
@@ -302,6 +306,11 @@ export class WagerTransaction {
     return this.kind === WagerTransactionKind.Refund || this.kind === WagerTransactionKind.Rollback;
   }
 
+  /** Diferente de requiresReference(): WIN nao exige referencia, mas pode ter uma (opcional). */
+  hasReference(): boolean {
+    return this.referenceExternalTransactionId !== undefined;
+  }
+
   matchesPayload(payloadHash: string): boolean {
     return this.payloadHash === payloadHash;
   }
@@ -309,7 +318,15 @@ export class WagerTransaction {
   ledgerDirectionFor(reference?: WagerTransaction): LedgerDirection {
     switch (this.kind) {
       case WagerTransactionKind.Opening:
+        return LedgerDirection.Credit;
+
       case WagerTransactionKind.Win:
+        // Referencia e opcional para WIN. Se vier, valida (mesmo provider/
+        // player/wallet/moeda/rodada, BET PROCESSED) mas NAO exige o mesmo
+        // valor — um premio pode ser diferente da aposta.
+        if (reference) {
+          this.assertValidReference(reference, [WagerTransactionKind.Bet], { requireExactAmount: false });
+        }
         return LedgerDirection.Credit;
 
       case WagerTransactionKind.Bet:
@@ -344,6 +361,7 @@ export class WagerTransaction {
   private assertValidReference(
     reference: WagerTransaction | undefined,
     allowedKinds: WagerTransactionKind[],
+    options: { requireExactAmount: boolean } = { requireExactAmount: true },
   ): asserts reference is WagerTransaction {
     if (
       !reference ||
@@ -353,7 +371,8 @@ export class WagerTransaction {
       reference.playerId !== this.playerId ||
       reference.walletId !== this.walletId ||
       reference.roundId !== this.roundId ||
-      !reference.money.equals(this.money) ||
+      reference.money.currency !== this.money.currency ||
+      (options.requireExactAmount && !reference.money.equals(this.money)) ||
       !allowedKinds.includes(reference.kind)
     ) {
       throw new InvalidReferenceError();

@@ -1,5 +1,5 @@
 import { Type } from 'class-transformer';
-import { IsIn, IsString, IsUUID, Matches, ValidateNested } from 'class-validator';
+import { IsIn, IsOptional, IsString, IsUUID, Matches, ValidateNested } from 'class-validator';
 
 export class SubmitWagerMoneyDto {
   @IsString()
@@ -32,12 +32,17 @@ export class SubmitWagerTransactionDto {
   @IsString()
   gameId!: string;
 
-  // Somente BET neste bloco. Ampliar esta lista e o caso de uso e o ponto de
-  // extensao para WIN/LOSS/REFUND/ROLLBACK em blocos futuros.
-  @IsIn(['BET'])
-  kind!: 'BET';
+  @IsIn(['BET', 'WIN', 'LOSS', 'REFUND', 'ROLLBACK'])
+  kind!: 'BET' | 'WIN' | 'LOSS' | 'REFUND' | 'ROLLBACK';
 
   @ValidateNested()
   @Type(() => SubmitWagerMoneyDto)
   money!: SubmitWagerMoneyDto;
+
+  // Obrigatoria para REFUND/ROLLBACK (o dominio recusa a criacao sem isso via
+  // MissingReferenceError -> 400). Opcional para WIN (referencia so a BET da
+  // mesma rodada, se o provider quiser correlacionar). BET e LOSS nunca usam.
+  @IsOptional()
+  @IsString()
+  referenceExternalTransactionId?: string;
 }
