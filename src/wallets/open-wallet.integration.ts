@@ -14,6 +14,11 @@ import type { OpenWalletResult } from './open-wallet.use-case';
  * caso de uso diretamente. Exige Postgres no ar com a migration aplicada
  * (`docker compose up -d postgres` + `bun run migration:up`).
  *
+ * Roda contra um banco local/descartavel de integracao: o afterEach faz
+ * TRUNCATE nas tres tabelas funcionais entre testes. TRUNCATE nao dispara
+ * trigger de DELETE nem altera o estado de nenhum trigger — o append-only
+ * do ledger continua habilitado o tempo todo.
+ *
  * Sem sufixo .spec./.test. de proposito: o `bun test` padrao nao descobre
  * este arquivo. Roda so via `bun run test:integration`.
  */
@@ -21,7 +26,6 @@ import type { OpenWalletResult } from './open-wallet.use-case';
 let app: INestApplication;
 let baseUrl: string;
 let orm: MikroORM;
-const createdWalletIds: string[] = [];
 
 beforeAll(async () => {
   app = await NestFactory.create(AppModule, { logger: false });
@@ -36,24 +40,7 @@ beforeAll(async () => {
 });
 
 afterEach(async () => {
-  const conn = orm.em.getConnection();
-  if (createdWalletIds.length > 0) {
-    // o ledger e append-only de proposito (Bloco 4) — so aqui, so para limpar
-    // dados de teste, desligamos o trigger, apagamos, e religamos no finally.
-    await conn.execute('ALTER TABLE wallet_ledger_entries DISABLE TRIGGER wallet_ledger_entries_append_only');
-    try {
-      for (const walletId of createdWalletIds) {
-        await conn.execute('DELETE FROM wallet_ledger_entries WHERE wallet_id = ?', [walletId]);
-      }
-    } finally {
-      await conn.execute('ALTER TABLE wallet_ledger_entries ENABLE TRIGGER wallet_ledger_entries_append_only');
-    }
-    for (const walletId of createdWalletIds) {
-      await conn.execute('DELETE FROM wager_transactions WHERE wallet_id = ?', [walletId]);
-      await conn.execute('DELETE FROM wallets WHERE id = ?', [walletId]);
-    }
-  }
-  createdWalletIds.length = 0;
+  await orm.em.getConnection().execute('TRUNCATE TABLE wallet_ledger_entries, wager_transactions, wallets');
 });
 
 afterAll(async () => {
@@ -68,6 +55,14 @@ function openWallet(payload: unknown): Promise<Response> {
   });
 }
 
+async function countAll(): Promise<{ wallets: number; transactions: number; ledgerEntries: number }> {
+  const conn = orm.em.getConnection();
+  const [wallets] = await conn.execute('SELECT count(*)::int AS count FROM wallets');
+  const [transactions] = await conn.execute('SELECT count(*)::int AS count FROM wager_transactions');
+  const [ledgerEntries] = await conn.execute('SELECT count(*)::int AS count FROM wallet_ledger_entries');
+  return { wallets: wallets.count, transactions: transactions.count, ledgerEntries: ledgerEntries.count };
+}
+
 describe('POST /wallets (integracao real com Postgres)', () => {
   test('abre wallet com saldo zero — persiste somente a wallet', async () => {
     const playerId = randomUUID();
@@ -76,7 +71,6 @@ describe('POST /wallets (integracao real com Postgres)', () => {
     expect(response.status).toBe(201);
 
     const body = (await response.json()) as OpenWalletResult;
-    createdWalletIds.push(body.id);
 
     expect(body).toEqual({
       id: body.id,
@@ -103,7 +97,6 @@ describe('POST /wallets (integracao real com Postgres)', () => {
     expect(response.status).toBe(201);
 
     const body = (await response.json()) as OpenWalletResult;
-    createdWalletIds.push(body.id);
     expect(body.balance).toEqual({ amount: '1000.00', currency: 'BRL' });
     expect(body.version).toBe(1);
 
@@ -140,20 +133,38 @@ describe('POST /wallets (integracao real com Postgres)', () => {
 
     const first = await openWallet(payload);
     expect(first.status).toBe(201);
-    const firstBody = (await first.json()) as OpenWalletResult;
-    createdWalletIds.push(firstBody.id);
 
-    const conn = orm.em.getConnection();
-    const before = await conn.execute('SELECT count(*)::int AS count FROM wallets WHERE player_id = ?', [
-      playerId,
-    ]);
+    const before = await countAll();
 
     const second = await openWallet(payload);
     expect(second.status).toBe(409);
 
-    const after = await conn.execute('SELECT count(*)::int AS count FROM wallets WHERE player_id = ?', [
+    const after = await countAll();
+    expect(after).toEqual(before);
+  });
+
+  test('valor acima do limite (NUMERIC(19,2)) retorna 400 e nao persiste nada', async () => {
+    const playerId = randomUUID();
+
+    const response = await openWallet({
       playerId,
-    ]);
-    expect(after[0].count).toBe(before[0].count);
+      initialBalance: { amount: '100000000000000000.00', currency: 'BRL' },
+    });
+
+    expect(response.status).toBe(400);
+    expect(await countAll()).toEqual({ wallets: 0, transactions: 0, ledgerEntries: 0 });
+  });
+
+  test('payload com campo extra retorna 400 (forbidNonWhitelisted) e nao persiste nada', async () => {
+    const playerId = randomUUID();
+
+    const response = await openWallet({
+      playerId,
+      initialBalance: { amount: '10.00', currency: 'BRL' },
+      unexpectedField: 'nao deveria existir',
+    });
+
+    expect(response.status).toBe(400);
+    expect(await countAll()).toEqual({ wallets: 0, transactions: 0, ledgerEntries: 0 });
   });
 });

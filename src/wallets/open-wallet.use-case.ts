@@ -1,8 +1,13 @@
 import { randomUUID } from 'node:crypto';
-import { ConflictException, Injectable } from '@nestjs/common';
+import { BadRequestException, ConflictException, Injectable } from '@nestjs/common';
 import { UniqueConstraintViolationException } from '@mikro-orm/core';
 import { EntityManager } from '@mikro-orm/postgresql';
-import { Money } from '../domain/money/money';
+import {
+  InvalidMoneyAmountError,
+  InvalidMoneyCurrencyError,
+  Money,
+  MoneyAmountOverflowError,
+} from '../domain/money/money';
 import { WagerTransaction } from '../domain/wagering/wager-transaction';
 import { Wallet } from '../domain/wallet/wallet';
 import { OpenWalletDto } from './dto/open-wallet.dto';
@@ -31,7 +36,20 @@ export class OpenWalletUseCase {
   async execute(dto: OpenWalletDto): Promise<OpenWalletResult> {
     const id = randomUUID();
     const now = new Date();
-    const initialBalance = Money.from(dto.initialBalance);
+
+    let initialBalance: Money;
+    try {
+      initialBalance = Money.from(dto.initialBalance);
+    } catch (error) {
+      if (
+        error instanceof InvalidMoneyAmountError ||
+        error instanceof InvalidMoneyCurrencyError ||
+        error instanceof MoneyAmountOverflowError
+      ) {
+        throw new BadRequestException(error.message);
+      }
+      throw error;
+    }
 
     // id/horario da abertura sao gerados aqui, na aplicacao — nunca dentro do dominio.
     const opening = initialBalance.isPositive()

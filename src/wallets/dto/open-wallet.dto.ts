@@ -9,7 +9,7 @@ export class MoneyDto {
   amount!: string;
 
   @IsString()
-  @Matches(/^[A-Z]{3}$/, { message: 'currency must be a 3-letter ISO-4217 code' })
+  @Matches(/^[A-Z]{3}$/, { message: 'currency must contain exactly 3 uppercase letters' })
   currency!: string;
 }
 
