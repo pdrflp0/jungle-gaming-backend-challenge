@@ -13,5 +13,5 @@
     "noEmit": true,
     "types": ["bun", "node"]
   },
-  "include": ["src/**/*.ts"]
+  "include": ["src/**/*.ts", "mikro-orm.config.ts", "scripts/**/*.ts"]
 }
