@@ -64,4 +64,11 @@ export class WagerTransactionEntity {
 
   @Property({ type: 'date', columnType: 'timestamptz', nullable: true })
   processedAt?: Date;
+
+  /** Saldo observado no momento em que a transacao terminou — usado pelo replay idempotente. */
+  @Property({ type: 'string', columnType: 'numeric(19,2)', nullable: true })
+  resultBalanceAmount?: string;
+
+  @Property({ type: 'string', columnType: 'varchar(3)', nullable: true })
+  resultBalanceCurrency?: string;
 }

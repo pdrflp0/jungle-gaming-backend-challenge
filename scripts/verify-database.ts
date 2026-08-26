@@ -113,18 +113,21 @@ async function runVerification(trx: Knex.Transaction): Promise<void> {
       ),
   );
 
+  // wager_transactions aceita moeda divergente de proposito (Bloco 6): uma BET
+  // submetida numa moeda diferente da wallet precisa ser gravada e rejeitada
+  // com failureCode CURRENCY_MISMATCH, nao barrada na hora de inserir. Quem
+  // continua com FK composta de moeda e o ledger — nenhum lancamento real
+  // pode ter moeda diferente da wallet.
   await expectRejected(
     trx,
-    'moeda divergente entre transacao e wallet',
-    byConstraint('wager_transactions_wallet_currency_fk'),
+    'moeda divergente entre ledger e wallet',
+    byConstraint('wallet_ledger_entries_wallet_currency_fk'),
     (sp) =>
       sp.raw(
-        `INSERT INTO wager_transactions (
-           id, provider_id, external_transaction_id, idempotency_key, payload_hash,
-           wallet_id, player_id, round_id, game_id, kind, amount, currency,
-           status, created_at
-         ) VALUES (?, 'provider-a', 'ext-bad-currency', 'provider-a:ext-bad-currency', 'hash', ?, ?, 'round-1', 'game-1', 'BET', '10.00', 'USD', 'PENDING', now())`,
-        [randomUUID(), walletId, playerId],
+        `INSERT INTO wallet_ledger_entries (
+           id, wallet_id, transaction_id, direction, amount, currency, balance_before, balance_after, created_at
+         ) VALUES (?, ?, ?, 'DEBIT', '10.00', 'USD', '100.00', '90.00', now())`,
+        [randomUUID(), walletId, secondBetId],
       ),
   );
 

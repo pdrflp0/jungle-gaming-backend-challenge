@@ -306,6 +306,38 @@
           "comment": null,
           "enumItems": [],
           "mappedType": "datetime"
+        },
+        "result_balance_amount": {
+          "name": "result_balance_amount",
+          "type": "numeric(19,2)",
+          "unsigned": false,
+          "autoincrement": false,
+          "primary": false,
+          "nullable": true,
+          "unique": false,
+          "length": null,
+          "precision": 19,
+          "scale": 2,
+          "default": null,
+          "comment": null,
+          "enumItems": [],
+          "mappedType": "decimal"
+        },
+        "result_balance_currency": {
+          "name": "result_balance_currency",
+          "type": "varchar(3)",
+          "unsigned": false,
+          "autoincrement": false,
+          "primary": false,
+          "nullable": true,
+          "unique": false,
+          "length": 3,
+          "precision": null,
+          "scale": null,
+          "default": null,
+          "comment": null,
+          "enumItems": [],
+          "mappedType": "string"
         }
       },
       "name": "wager_transactions",
@@ -394,13 +426,13 @@
         },
         {
           "name": "wager_transactions_failure_code_consistency",
-          "columnName": "failure_code",
+          "columnName": "status",
           "definition": "CHECK (((((status)::text = ANY ((ARRAY['REJECTED'::character varying, 'FAILED'::character varying])::text[])) AND (failure_code IS NOT NULL)) OR (((status)::text <> ALL ((ARRAY['REJECTED'::character varying, 'FAILED'::character varying])::text[])) AND (failure_code IS NULL))))",
           "expression": "((status = ANY (ARRAY['REJECTED'::character varying, 'FAILED'::character varying][])) AND failure_code IS NOT NULL)) OR (((status <> ALL (ARRAY['REJECTED'::character varying, 'FAILED'::character varying][])) AND (failure_code IS NULL))"
         },
         {
           "name": "wager_transactions_processed_at_consistency",
-          "columnName": "processed_at",
+          "columnName": "status",
           "definition": "CHECK (((((status)::text = 'PROCESSED'::text) AND (processed_at IS NOT NULL)) OR (((status)::text <> 'PROCESSED'::text) AND (processed_at IS NULL))))",
           "expression": "((status = 'PROCESSED'::text) AND processed_at IS NOT NULL)) OR (((status <> 'PROCESSED'::text) AND (processed_at IS NULL))"
         },
@@ -412,9 +444,27 @@
         },
         {
           "name": "wager_transactions_reference_required_when_processed",
-          "columnName": "reference_transaction_id",
+          "columnName": "status",
           "definition": "CHECK ((((kind)::text <> ALL ((ARRAY['REFUND'::character varying, 'ROLLBACK'::character varying])::text[])) OR ((status)::text <> 'PROCESSED'::text) OR (reference_transaction_id IS NOT NULL)))",
           "expression": "(kind <> ALL (ARRAY['REFUND'::character varying, 'ROLLBACK'::character varying][])) OR (status <> 'PROCESSED'::text) OR (reference_transaction_id IS NOT NULL)"
+        },
+        {
+          "name": "wager_transactions_result_balance_both_or_neither",
+          "columnName": "result_balance_amount",
+          "definition": "CHECK ((((result_balance_amount IS NULL) AND (result_balance_currency IS NULL)) OR ((result_balance_amount IS NOT NULL) AND (result_balance_currency IS NOT NULL))))",
+          "expression": "((result_balance_amount IS NULL) AND (result_balance_currency IS NULL)) OR ((result_balance_amount IS NOT NULL) AND (result_balance_currency IS NOT NULL))"
+        },
+        {
+          "name": "wager_transactions_result_balance_currency_format",
+          "columnName": "result_balance_currency",
+          "definition": "CHECK (((result_balance_currency IS NULL) OR ((result_balance_currency)::text ~ '^[A-Z]{3}$'::text)))",
+          "expression": "result_balance_currency IS NULL) OR ((result_balance_currency ~ '^[A-Z]{3}$'::text)"
+        },
+        {
+          "name": "wager_transactions_result_balance_non_negative",
+          "columnName": "result_balance_amount",
+          "definition": "CHECK (((result_balance_amount IS NULL) OR (result_balance_amount >= (0)::numeric)))",
+          "expression": "result_balance_amount IS NULL) OR (result_balance_amount >= (0)"
         }
       ],
       "foreignKeys": {
@@ -431,17 +481,15 @@
           "updateRule": "no action",
           "deleteRule": "no action"
         },
-        "wager_transactions_wallet_currency_fk": {
+        "wager_transactions_wallet_fk": {
           "columnNames": [
-            "wallet_id",
-            "currency"
+            "wallet_id"
           ],
-          "constraintName": "wager_transactions_wallet_currency_fk",
+          "constraintName": "wager_transactions_wallet_fk",
           "localTableName": "public.wager_transactions",
           "referencedTableName": "public.wallets",
           "referencedColumnNames": [
-            "id",
-            "currency"
+            "id"
           ],
           "updateRule": "no action",
           "deleteRule": "no action"

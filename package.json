@@ -15,7 +15,8 @@
     "db:up": "docker compose up -d postgres",
     "db:down": "docker compose down",
     "db:verify": "bun run scripts/verify-database.ts",
-    "test:integration": "bun test ./src/wallets/open-wallet.integration.ts",
+    "test:integration": "bun test ./src/wallets/open-wallet.integration.ts ./src/wagering/process-bet.integration.ts",
+    "test:concurrency": "bun test ./src/wagering/process-bet.concurrency.ts ./src/wagering/idempotency.concurrency.ts",
     "migration:up": "mikro-orm migration:up",
     "migration:down": "mikro-orm migration:down"
   },
@@ -37,6 +38,7 @@
     "@mikro-orm/cli": "6.6.16",
     "@nestjs/testing": "^10.4.0",
     "@types/bun": "^1.1.0",
+    "@types/express": "^5.0.6",
     "@types/node": "^22.0.0",
     "knex": "3.2.10",
     "ts-node": "^10.9.2",
