@@ -53,20 +53,23 @@ interface SubmitBetBody {
   status: string;
   balance: { amount: string; currency: string };
   idempotentReplay: boolean;
-  code?: string;
+  failureCode?: string;
 }
 
-async function createWallet(initialAmount: string, currency = 'BRL'): Promise<string> {
+interface Wallet {
+  walletId: string;
+  playerId: string;
+}
+
+async function createWallet(initialAmount: string, currency = 'BRL'): Promise<Wallet> {
+  const playerId = randomUUID();
   const response = await fetch(`${baseUrl}/wallets`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({
-      playerId: randomUUID(),
-      initialBalance: { amount: initialAmount, currency },
-    }),
+    body: JSON.stringify({ playerId, initialBalance: { amount: initialAmount, currency } }),
   });
   const body = (await response.json()) as OpenWalletBody;
-  return body.id;
+  return { walletId: body.id, playerId };
 }
 
 function submitBet(
@@ -125,10 +128,11 @@ async function countDebitLedgerEntries(walletId: string): Promise<number> {
 
 describe('POST /wagering/transactions — BET (integracao real com Postgres)', () => {
   test('BET de 25 sobre saldo 100: PROCESSED, saldo 75, um ledger DEBIT, version incrementada', async () => {
-    const walletId = await createWallet('100.00');
+    const { walletId, playerId } = await createWallet('100.00');
 
     const response = await submitBet(randomUUID(), {
       walletId,
+      playerId,
       money: { amount: '25.00', currency: 'BRL' },
     });
 
@@ -137,6 +141,7 @@ describe('POST /wagering/transactions — BET (integracao real com Postgres)', (
     expect(body.status).toBe('PROCESSED');
     expect(body.balance).toEqual({ amount: '75.00', currency: 'BRL' });
     expect(body.idempotentReplay).toBe(false);
+    expect(body.failureCode).toBeUndefined();
 
     expect(await walletBalance(walletId)).toBe('75.00');
     expect(await countDebitLedgerEntries(walletId)).toBe(1);
@@ -157,18 +162,12 @@ describe('POST /wagering/transactions — BET (integracao real com Postgres)', (
   });
 
   test('replay da mesma key e mesmo payload: mesmo transactionId, idempotentReplay true, nenhum novo ledger', async () => {
-    const walletId = await createWallet('100.00');
+    const { walletId, playerId } = await createWallet('100.00');
     const key = randomUUID();
-    // externalTransactionId e playerId fixos: sem isso, cada chamada a
-    // submitBet() geraria um payload diferente (o helper sorteia esses dois
-    // campos por padrao), o que faria a "repeticao" na verdade ser um
-    // payload novo, nao um replay de verdade.
-    const bet = {
-      walletId,
-      externalTransactionId: randomUUID(),
-      playerId: randomUUID(),
-      money: { amount: '25.00', currency: 'BRL' },
-    };
+    // externalTransactionId fixo: sem isso, cada chamada a submitBet() geraria
+    // um payload diferente (o helper sorteia um por padrao), o que faria a
+    // "repeticao" na verdade ser um payload novo, nao um replay de verdade.
+    const bet = { walletId, playerId, externalTransactionId: randomUUID(), money: { amount: '25.00', currency: 'BRL' } };
 
     const first = await submitBet(key, bet);
     const firstBody = (await first.json()) as SubmitBetBody;
@@ -186,17 +185,16 @@ describe('POST /wagering/transactions — BET (integracao real com Postgres)', (
   });
 
   test('mesma key com payload diferente: conflito, nenhum novo efeito financeiro', async () => {
-    const walletId = await createWallet('100.00');
+    const { walletId, playerId } = await createWallet('100.00');
     const key = randomUUID();
     const externalTransactionId = randomUUID();
-    const playerId = randomUUID();
 
-    await submitBet(key, { walletId, externalTransactionId, playerId, money: { amount: '25.00', currency: 'BRL' } });
+    await submitBet(key, { walletId, playerId, externalTransactionId, money: { amount: '25.00', currency: 'BRL' } });
 
     const conflicting = await submitBet(key, {
       walletId,
-      externalTransactionId,
       playerId,
+      externalTransactionId,
       money: { amount: '30.00', currency: 'BRL' },
     });
     expect(conflicting.status).toBe(409);
@@ -206,32 +204,55 @@ describe('POST /wagering/transactions — BET (integracao real com Postgres)', (
   });
 
   test('saldo insuficiente: REJECTED/INSUFFICIENT_FUNDS, saldo intacto, nenhum ledger', async () => {
-    const walletId = await createWallet('100.00');
+    const { walletId, playerId } = await createWallet('100.00');
 
     const response = await submitBet(randomUUID(), {
       walletId,
+      playerId,
       money: { amount: '150.00', currency: 'BRL' },
     });
 
     expect(response.status).toBe(422);
     const body = (await response.json()) as SubmitBetBody;
     expect(body.status).toBe('REJECTED');
+    expect(body.failureCode).toBe('INSUFFICIENT_FUNDS');
 
     expect(await walletBalance(walletId)).toBe('100.00');
     expect(await countDebitLedgerEntries(walletId)).toBe(0);
   });
 
   test('moeda divergente: REJECTED/CURRENCY_MISMATCH, saldo intacto, nenhum ledger', async () => {
-    const walletId = await createWallet('100.00', 'BRL');
+    const { walletId, playerId } = await createWallet('100.00', 'BRL');
 
     const response = await submitBet(randomUUID(), {
       walletId,
+      playerId,
       money: { amount: '25.00', currency: 'USD' },
     });
 
     expect(response.status).toBe(422);
     const body = (await response.json()) as SubmitBetBody;
     expect(body.status).toBe('REJECTED');
+    expect(body.failureCode).toBe('CURRENCY_MISMATCH');
+
+    expect(await walletBalance(walletId)).toBe('100.00');
+    expect(await countDebitLedgerEntries(walletId)).toBe(0);
+  });
+
+  test('jogador divergente: REJECTED/PLAYER_MISMATCH, saldo intacto, nenhum ledger', async () => {
+    const { walletId } = await createWallet('100.00');
+    const someoneElse = randomUUID();
+
+    const response = await submitBet(randomUUID(), {
+      walletId,
+      playerId: someoneElse,
+      money: { amount: '25.00', currency: 'BRL' },
+    });
+
+    expect(response.status).toBe(422);
+    const body = (await response.json()) as SubmitBetBody;
+    expect(body.status).toBe('REJECTED');
+    expect(body.failureCode).toBe('PLAYER_MISMATCH');
 
     expect(await walletBalance(walletId)).toBe('100.00');
     expect(await countDebitLedgerEntries(walletId)).toBe(0);
@@ -252,18 +273,21 @@ describe('POST /wagering/transactions — BET (integracao real com Postgres)', (
   });
 
   test('resposta original de uma BET PROCESSED continua estavel apos outra operacao mudar a wallet', async () => {
-    const walletId = await createWallet('100.00');
+    const { walletId, playerId } = await createWallet('100.00');
     const keyOriginal = randomUUID();
-    const externalTransactionId = randomUUID();
-    const playerId = randomUUID();
-    const bet = { walletId, externalTransactionId, playerId, money: { amount: '25.00', currency: 'BRL' } };
+    const bet = {
+      walletId,
+      playerId,
+      externalTransactionId: randomUUID(),
+      money: { amount: '25.00', currency: 'BRL' },
+    };
 
     const original = await submitBet(keyOriginal, bet);
     const originalBody = (await original.json()) as SubmitBetBody;
     expect(originalBody.balance).toEqual({ amount: '75.00', currency: 'BRL' });
 
     // outra operacao muda a wallet depois
-    await submitBet(randomUUID(), { walletId, money: { amount: '10.00', currency: 'BRL' } });
+    await submitBet(randomUUID(), { walletId, playerId, money: { amount: '10.00', currency: 'BRL' } });
     expect(await walletBalance(walletId)).toBe('65.00');
 
     const replay = await submitBet(keyOriginal, bet);
@@ -275,18 +299,22 @@ describe('POST /wagering/transactions — BET (integracao real com Postgres)', (
   });
 
   test('resposta original de uma BET REJECTED continua estavel apos outra operacao mudar a wallet', async () => {
-    const walletId = await createWallet('100.00');
+    const { walletId, playerId } = await createWallet('100.00');
     const keyRejected = randomUUID();
-    const externalTransactionId = randomUUID();
-    const playerId = randomUUID();
-    const bet = { walletId, externalTransactionId, playerId, money: { amount: '150.00', currency: 'BRL' } };
+    const bet = {
+      walletId,
+      playerId,
+      externalTransactionId: randomUUID(),
+      money: { amount: '150.00', currency: 'BRL' },
+    };
 
     const rejected = await submitBet(keyRejected, bet);
     const rejectedBody = (await rejected.json()) as SubmitBetBody;
     expect(rejectedBody.balance).toEqual({ amount: '100.00', currency: 'BRL' });
+    expect(rejectedBody.failureCode).toBe('INSUFFICIENT_FUNDS');
 
     // outra operacao muda a wallet depois
-    await submitBet(randomUUID(), { walletId, money: { amount: '30.00', currency: 'BRL' } });
+    await submitBet(randomUUID(), { walletId, playerId, money: { amount: '30.00', currency: 'BRL' } });
     expect(await walletBalance(walletId)).toBe('70.00');
 
     const replay = await submitBet(keyRejected, bet);
@@ -295,5 +323,7 @@ describe('POST /wagering/transactions — BET (integracao real com Postgres)', (
     expect(replayBody.idempotentReplay).toBe(true);
     // continua devolvendo o saldo observado na rejeicao original (100.00), nao o saldo atual (70.00).
     expect(replayBody.balance).toEqual({ amount: '100.00', currency: 'BRL' });
+    // e o mesmo failureCode original.
+    expect(replayBody.failureCode).toBe('INSUFFICIENT_FUNDS');
   });
 });

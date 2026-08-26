@@ -51,25 +51,26 @@ interface SubmitBetBody {
   idempotentReplay: boolean;
 }
 
-async function createWallet(initialAmount: string): Promise<string> {
+async function createWallet(initialAmount: string): Promise<{ walletId: string; playerId: string }> {
+  const playerId = randomUUID();
   const response = await fetch(`${baseUrl}/wallets`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ playerId: randomUUID(), initialBalance: { amount: initialAmount, currency: 'BRL' } }),
+    body: JSON.stringify({ playerId, initialBalance: { amount: initialAmount, currency: 'BRL' } }),
   });
   const body = (await response.json()) as OpenWalletBody;
-  return body.id;
+  return { walletId: body.id, playerId };
 }
 
 describe('Concorrencia real: 50 envios paralelos da mesma BET', () => {
   test('uma unica WagerTransaction, um unico debito, um unico ledger, 49 replays', async () => {
-    const walletId = await createWallet('100.00');
+    const { walletId, playerId } = await createWallet('100.00');
     const idempotencyKey = randomUUID();
 
     const payload = JSON.stringify({
       providerId: 'provider-a',
       externalTransactionId: 'ext-bet-duplicada',
-      playerId: randomUUID(),
+      playerId,
       walletId,
       roundId: 'round-1',
       gameId: 'fortune-chimp',

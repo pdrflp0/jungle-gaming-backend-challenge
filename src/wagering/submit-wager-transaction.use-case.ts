@@ -47,6 +47,7 @@ export interface SubmitWagerTransactionResponse {
     status: string;
     balance: { amount: string; currency: string };
     idempotentReplay: boolean;
+    failureCode?: string;
   };
 }
 
@@ -179,23 +180,28 @@ export class SubmitWagerTransactionUseCase {
 
       const wallet = walletRowToDomain(walletRow);
 
-      try {
-        const ledgerEntry = wallet.debit({
-          money: transaction.money,
-          transactionId: transaction.id,
-          entryId: randomUUID(),
-          now,
-        });
-        transaction.markProcessed(undefined, now);
-        await updateWalletBalance(em, wallet);
-        await insertLedgerEntry(em, ledgerEntry);
-      } catch (error) {
-        if (error instanceof InsufficientFundsError) {
-          transaction.reject(FailureCode.InsufficientFunds);
-        } else if (error instanceof WalletCurrencyMismatchError) {
-          transaction.reject(FailureCode.CurrencyMismatch);
-        } else {
-          throw error;
+      if (walletRow.player_id !== dto.playerId) {
+        // wallet existe, mas pertence a outro jogador — nao toca saldo nem ledger.
+        transaction.reject(FailureCode.PlayerMismatch);
+      } else {
+        try {
+          const ledgerEntry = wallet.debit({
+            money: transaction.money,
+            transactionId: transaction.id,
+            entryId: randomUUID(),
+            now,
+          });
+          transaction.markProcessed(undefined, now);
+          await updateWalletBalance(em, wallet);
+          await insertLedgerEntry(em, ledgerEntry);
+        } catch (error) {
+          if (error instanceof InsufficientFundsError) {
+            transaction.reject(FailureCode.InsufficientFunds);
+          } else if (error instanceof WalletCurrencyMismatchError) {
+            transaction.reject(FailureCode.CurrencyMismatch);
+          } else {
+            throw error;
+          }
         }
       }
 
@@ -227,6 +233,7 @@ export class SubmitWagerTransactionUseCase {
       status: outcome.status,
       balance: outcome.balance.toJSON(),
       idempotentReplay: false,
+      ...(transaction.failureCode ? { failureCode: transaction.failureCode } : {}),
     };
 
     if (outcome.status === WagerTransactionStatus.Processed) {
@@ -244,14 +251,22 @@ export class SubmitWagerTransactionUseCase {
       });
     }
 
+    // Uma BET terminal (PROCESSED ou REJECTED) sempre grava seu saldo
+    // observado (ver updateWagerTransactionOutcome). Se estiver faltando,
+    // e inconsistencia interna real — falha com erro claro, nunca inventa
+    // um resultado financeiro (nada de "?? 0.00" aqui).
+    if (row.result_balance_amount === null || row.result_balance_currency === null) {
+      throw new Error(
+        `Wager transaction ${row.id} is terminal (status=${row.status}) but has no recorded result balance`,
+      );
+    }
+
     const body = {
       transactionId: row.id,
       status: row.status,
-      balance: {
-        amount: row.result_balance_amount ?? '0.00',
-        currency: row.result_balance_currency ?? 'BRL',
-      },
+      balance: { amount: row.result_balance_amount, currency: row.result_balance_currency },
       idempotentReplay: true,
+      ...(row.failure_code ? { failureCode: row.failure_code } : {}),
     };
 
     if (row.status === WagerTransactionStatus.Processed) {

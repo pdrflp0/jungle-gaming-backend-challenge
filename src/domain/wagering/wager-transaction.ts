@@ -21,6 +21,7 @@ export enum WagerTransactionStatus {
 export enum FailureCode {
   InsufficientFunds = 'INSUFFICIENT_FUNDS',
   CurrencyMismatch = 'CURRENCY_MISMATCH',
+  PlayerMismatch = 'PLAYER_MISMATCH',
   ReferenceNotFound = 'REFERENCE_NOT_FOUND',
   ReferenceAlreadyReversed = 'REFERENCE_ALREADY_REVERSED',
   ReversalWouldMakeBalanceNegative = 'REVERSAL_WOULD_MAKE_BALANCE_NEGATIVE',

@@ -57,24 +57,30 @@ interface SubmitBetBody {
   idempotentReplay: boolean;
 }
 
-async function createWallet(initialAmount: string): Promise<string> {
+async function createWallet(initialAmount: string): Promise<{ walletId: string; playerId: string }> {
+  const playerId = randomUUID();
   const response = await fetch(`${baseUrl}/wallets`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ playerId: randomUUID(), initialBalance: { amount: initialAmount, currency: 'BRL' } }),
+    body: JSON.stringify({ playerId, initialBalance: { amount: initialAmount, currency: 'BRL' } }),
   });
   const body = (await response.json()) as OpenWalletBody;
-  return body.id;
+  return { walletId: body.id, playerId };
 }
 
-function submitBet(walletId: string, idempotencyKey: string, externalTransactionId: string): Promise<Response> {
+function submitBet(
+  walletId: string,
+  playerId: string,
+  idempotencyKey: string,
+  externalTransactionId: string,
+): Promise<Response> {
   return fetch(`${baseUrl}/wagering/transactions`, {
     method: 'POST',
     headers: { 'content-type': 'application/json', 'idempotency-key': idempotencyKey },
     body: JSON.stringify({
       providerId: 'provider-a',
       externalTransactionId,
-      playerId: randomUUID(),
+      playerId,
       walletId,
       roundId: 'round-1',
       gameId: 'fortune-chimp',
@@ -86,11 +92,11 @@ function submitBet(walletId: string, idempotencyKey: string, externalTransaction
 
 describe('Concorrencia real: duas BET de 80 disputando saldo 100', () => {
   test('exatamente uma PROCESSED, exatamente uma REJECTED, saldo final 20, um unico ledger', async () => {
-    const walletId = await createWallet('100.00');
+    const { walletId, playerId } = await createWallet('100.00');
 
     const [responseA, responseB] = await Promise.all([
-      submitBet(walletId, randomUUID(), 'ext-bet-a'),
-      submitBet(walletId, randomUUID(), 'ext-bet-b'),
+      submitBet(walletId, playerId, randomUUID(), 'ext-bet-a'),
+      submitBet(walletId, playerId, randomUUID(), 'ext-bet-b'),
     ]);
 
     const [bodyA, bodyB] = await Promise.all([
