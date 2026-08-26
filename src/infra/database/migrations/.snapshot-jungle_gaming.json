@@ -412,7 +412,7 @@
         },
         {
           "name": "wager_transactions_reference_required_when_processed",
-          "columnName": "reference_transaction_id",
+          "columnName": "status",
           "definition": "CHECK ((((kind)::text <> ALL ((ARRAY['REFUND'::character varying, 'ROLLBACK'::character varying])::text[])) OR ((status)::text <> 'PROCESSED'::text) OR (reference_transaction_id IS NOT NULL)))",
           "expression": "(kind <> ALL (ARRAY['REFUND'::character varying, 'ROLLBACK'::character varying][])) OR (status <> 'PROCESSED'::text) OR (reference_transaction_id IS NOT NULL)"
         }
@@ -646,7 +646,7 @@
         },
         {
           "name": "wallet_ledger_entries_arithmetic",
-          "columnName": "amount",
+          "columnName": "balance_before",
           "definition": "CHECK (((((direction)::text = 'CREDIT'::text) AND (balance_after = (balance_before + amount))) OR (((direction)::text = 'DEBIT'::text) AND (balance_after = (balance_before - amount)))))",
           "expression": "((direction = 'CREDIT'::text) AND balance_after = (balance_before + amount))) OR (((direction = 'DEBIT'::text) AND (balance_after = (balance_before - amount)))"
         },
