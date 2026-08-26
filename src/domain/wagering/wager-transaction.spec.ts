@@ -8,6 +8,7 @@ import {
   InvalidWagerAmountError,
   LossHasNoLedgerEntryError,
   MissingReferenceError,
+  MissingResolvedReferenceError,
   OpeningIsInternalError,
   WagerTransaction,
   WagerTransactionKind,
@@ -48,7 +49,7 @@ describe('WagerTransaction.create', () => {
   test('cria REFUND/ROLLBACK pendentes quando a referencia esta presente', () => {
     for (const kind of [WagerTransactionKind.Refund, WagerTransactionKind.Rollback]) {
       const tx = WagerTransaction.create(
-        baseProps({ id: `tx-${kind}`, kind, referenceExternalTransactionId: 'ext-0' }),
+        baseProps({ id: `tx-${kind}`, kind, referenceExternalTransactionId: 'ext-bet' }),
       );
       expect(tx.status).toBe(WagerTransactionStatus.Pending);
     }
@@ -131,19 +132,18 @@ describe('affectsBalance / requiresReference', () => {
     );
     expect(
       WagerTransaction.create(
-        baseProps({ kind: WagerTransactionKind.Refund, referenceExternalTransactionId: 'ext-0' }),
+        baseProps({ kind: WagerTransactionKind.Refund, referenceExternalTransactionId: 'ext-bet' }),
       ).requiresReference(),
     ).toBe(true);
   });
 });
 
 describe('transicoes de estado', () => {
-  test('markProcessed a partir de PENDING', () => {
+  test('markProcessed a partir de PENDING (kind sem referencia)', () => {
     const tx = WagerTransaction.create(baseProps());
-    tx.markProcessed('ref-tx-1', LATER);
+    tx.markProcessed(undefined, LATER);
 
     expect(tx.status).toBe(WagerTransactionStatus.Processed);
-    expect(tx.referenceTransactionId).toBe('ref-tx-1');
     expect(tx.processedAt).toBe(LATER);
   });
 
@@ -158,15 +158,82 @@ describe('transicoes de estado', () => {
     expect(failed.status).toBe(WagerTransactionStatus.Failed);
   });
 
-  test('markPendingReference so e valido para REFUND/ROLLBACK', () => {
+  test('markPendingReference so e valido para REFUND/ROLLBACK, a partir de PENDING', () => {
     const refund = WagerTransaction.create(
-      baseProps({ kind: WagerTransactionKind.Refund, referenceExternalTransactionId: 'ext-0' }),
+      baseProps({
+        externalTransactionId: 'ext-refund',
+        kind: WagerTransactionKind.Refund,
+        referenceExternalTransactionId: 'ext-bet',
+      }),
     );
     refund.markPendingReference();
     expect(refund.status).toBe(WagerTransactionStatus.PendingReference);
 
     const bet = WagerTransaction.create(baseProps({ kind: WagerTransactionKind.Bet }));
     expect(() => bet.markPendingReference()).toThrow(InvalidTransactionStateError);
+  });
+
+  test('markPendingReference rejeita uma segunda chamada quando ja esta em PENDING_REFERENCE', () => {
+    const refund = WagerTransaction.create(
+      baseProps({
+        externalTransactionId: 'ext-refund',
+        kind: WagerTransactionKind.Refund,
+        referenceExternalTransactionId: 'ext-bet',
+      }),
+    );
+    refund.markPendingReference();
+
+    expect(() => refund.markPendingReference()).toThrow(InvalidTransactionStateError);
+  });
+
+  test('markProcessed exige referenceTransactionId resolvido para REFUND/ROLLBACK', () => {
+    const refund = WagerTransaction.create(
+      baseProps({
+        externalTransactionId: 'ext-refund',
+        kind: WagerTransactionKind.Refund,
+        referenceExternalTransactionId: 'ext-bet',
+      }),
+    );
+
+    expect(() => refund.markProcessed(undefined, LATER)).toThrow(MissingResolvedReferenceError);
+    expect(refund.status).toBe(WagerTransactionStatus.Pending); // nao mudou
+
+    refund.markProcessed('internal-bet-id', LATER);
+    expect(refund.status).toBe(WagerTransactionStatus.Processed);
+    expect(refund.referenceTransactionId).toBe('internal-bet-id');
+  });
+
+  test('markProcessed nao exige referenceTransactionId para BET, WIN, LOSS e OPENING', () => {
+    const bet = WagerTransaction.create(baseProps({ kind: WagerTransactionKind.Bet }));
+    bet.markProcessed(undefined, LATER);
+    expect(bet.status).toBe(WagerTransactionStatus.Processed);
+
+    const win = WagerTransaction.create(baseProps({ id: 'tx-win', kind: WagerTransactionKind.Win }));
+    win.markProcessed(undefined, LATER);
+    expect(win.status).toBe(WagerTransactionStatus.Processed);
+
+    const loss = WagerTransaction.create(baseProps({ id: 'tx-loss', kind: WagerTransactionKind.Loss }));
+    loss.markProcessed(undefined, LATER);
+    expect(loss.status).toBe(WagerTransactionStatus.Processed);
+
+    // createOpening ja chama markProcessed(undefined, ...) internamente — ver describe proprio.
+  });
+
+  test('PENDING_REFERENCE pode ir para PROCESSED ao receber o id interno da referencia', () => {
+    const rollback = WagerTransaction.create(
+      baseProps({
+        externalTransactionId: 'ext-rollback',
+        kind: WagerTransactionKind.Rollback,
+        referenceExternalTransactionId: 'ext-bet',
+      }),
+    );
+
+    rollback.markPendingReference();
+    expect(rollback.status).toBe(WagerTransactionStatus.PendingReference);
+
+    rollback.markProcessed('internal-bet-id', LATER);
+    expect(rollback.status).toBe(WagerTransactionStatus.Processed);
+    expect(rollback.referenceTransactionId).toBe('internal-bet-id');
   });
 
   test('nenhuma transicao e permitida a partir de um estado terminal', () => {
@@ -221,47 +288,90 @@ describe('ledgerDirectionFor', () => {
     expect(() => loss.ledgerDirectionFor()).toThrow(LossHasNoLedgerEntryError);
   });
 
-  test('REFUND e CREDIT quando a referencia e uma BET valida e processada', () => {
-    const bet = WagerTransaction.create(baseProps({ id: 'tx-bet' }));
+  test('REFUND e CREDIT quando a referencia e a BET realmente solicitada, valida e processada', () => {
+    const bet = WagerTransaction.create(baseProps({ id: 'tx-bet', externalTransactionId: 'ext-bet' }));
     bet.markProcessed(undefined, NOW);
 
     const refund = WagerTransaction.create(
-      baseProps({ id: 'tx-refund', kind: WagerTransactionKind.Refund, referenceExternalTransactionId: 'ext-1' }),
+      baseProps({
+        id: 'tx-refund',
+        externalTransactionId: 'ext-refund',
+        kind: WagerTransactionKind.Refund,
+        referenceExternalTransactionId: 'ext-bet',
+      }),
     );
 
     expect(refund.ledgerDirectionFor(bet)).toBe(LedgerDirection.Credit);
   });
 
-  test('REFUND rejeita referencia nao processada', () => {
-    const bet = WagerTransaction.create(baseProps({ id: 'tx-bet' })); // continua PENDING
+  test('REFUND rejeita referencia com externalTransactionId diferente do solicitado', () => {
+    // mesmo provider/player/wallet/moeda/rodada/valor/status/kind — so o externalTransactionId nao bate.
+    const otherBet = WagerTransaction.create(
+      baseProps({ id: 'tx-other-bet', externalTransactionId: 'ext-bet-outro' }),
+    );
+    otherBet.markProcessed(undefined, NOW);
 
     const refund = WagerTransaction.create(
-      baseProps({ id: 'tx-refund', kind: WagerTransactionKind.Refund, referenceExternalTransactionId: 'ext-1' }),
+      baseProps({
+        id: 'tx-refund',
+        externalTransactionId: 'ext-refund',
+        kind: WagerTransactionKind.Refund,
+        referenceExternalTransactionId: 'ext-bet', // pediu "ext-bet", nao "ext-bet-outro"
+      }),
+    );
+
+    expect(() => refund.ledgerDirectionFor(otherBet)).toThrow(InvalidReferenceError);
+  });
+
+  test('REFUND rejeita referencia nao processada', () => {
+    const bet = WagerTransaction.create(baseProps({ id: 'tx-bet', externalTransactionId: 'ext-bet' })); // continua PENDING
+
+    const refund = WagerTransaction.create(
+      baseProps({
+        id: 'tx-refund',
+        externalTransactionId: 'ext-refund',
+        kind: WagerTransactionKind.Refund,
+        referenceExternalTransactionId: 'ext-bet',
+      }),
     );
 
     expect(() => refund.ledgerDirectionFor(bet)).toThrow(InvalidReferenceError);
   });
 
   test('REFUND rejeita referencia de kind errado (nao pode referenciar WIN)', () => {
-    const win = WagerTransaction.create(baseProps({ id: 'tx-win', kind: WagerTransactionKind.Win }));
+    const win = WagerTransaction.create(
+      baseProps({ id: 'tx-win', externalTransactionId: 'ext-win', kind: WagerTransactionKind.Win }),
+    );
     win.markProcessed(undefined, NOW);
 
     const refund = WagerTransaction.create(
-      baseProps({ id: 'tx-refund', kind: WagerTransactionKind.Refund, referenceExternalTransactionId: 'ext-1' }),
+      baseProps({
+        id: 'tx-refund',
+        externalTransactionId: 'ext-refund',
+        kind: WagerTransactionKind.Refund,
+        referenceExternalTransactionId: 'ext-win', // id bate, so o kind e' invalido para REFUND
+      }),
     );
 
     expect(() => refund.ledgerDirectionFor(win)).toThrow(InvalidReferenceError);
   });
 
   test('REFUND rejeita referencia com valor diferente', () => {
-    const bet = WagerTransaction.create(baseProps({ id: 'tx-bet', money: Money.from({ amount: '25.00', currency: BRL }) }));
+    const bet = WagerTransaction.create(
+      baseProps({
+        id: 'tx-bet',
+        externalTransactionId: 'ext-bet',
+        money: Money.from({ amount: '25.00', currency: BRL }),
+      }),
+    );
     bet.markProcessed(undefined, NOW);
 
     const refund = WagerTransaction.create(
       baseProps({
         id: 'tx-refund',
+        externalTransactionId: 'ext-refund',
         kind: WagerTransactionKind.Refund,
-        referenceExternalTransactionId: 'ext-1',
+        referenceExternalTransactionId: 'ext-bet',
         money: Money.from({ amount: '10.00', currency: BRL }),
       }),
     );
@@ -271,33 +381,60 @@ describe('ledgerDirectionFor', () => {
 
   test('REFUND rejeita quando nao ha referencia resolvida', () => {
     const refund = WagerTransaction.create(
-      baseProps({ id: 'tx-refund', kind: WagerTransactionKind.Refund, referenceExternalTransactionId: 'ext-1' }),
+      baseProps({
+        id: 'tx-refund',
+        externalTransactionId: 'ext-refund',
+        kind: WagerTransactionKind.Refund,
+        referenceExternalTransactionId: 'ext-bet',
+      }),
     );
 
     expect(() => refund.ledgerDirectionFor(undefined)).toThrow(InvalidReferenceError);
   });
 
   test('ROLLBACK inverte a direcao da referencia (BET->CREDIT, WIN->DEBIT, REFUND->DEBIT)', () => {
-    const bet = WagerTransaction.create(baseProps({ id: 'tx-bet' }));
+    const bet = WagerTransaction.create(baseProps({ id: 'tx-bet', externalTransactionId: 'ext-bet' }));
     bet.markProcessed(undefined, NOW);
     const rollbackOfBet = WagerTransaction.create(
-      baseProps({ id: 'tx-rb-1', kind: WagerTransactionKind.Rollback, referenceExternalTransactionId: 'ext-1' }),
+      baseProps({
+        id: 'tx-rb-1',
+        externalTransactionId: 'ext-rb-1',
+        kind: WagerTransactionKind.Rollback,
+        referenceExternalTransactionId: 'ext-bet',
+      }),
     );
     expect(rollbackOfBet.ledgerDirectionFor(bet)).toBe(LedgerDirection.Credit);
 
-    const win = WagerTransaction.create(baseProps({ id: 'tx-win', kind: WagerTransactionKind.Win }));
+    const win = WagerTransaction.create(
+      baseProps({ id: 'tx-win', externalTransactionId: 'ext-win', kind: WagerTransactionKind.Win }),
+    );
     win.markProcessed(undefined, NOW);
     const rollbackOfWin = WagerTransaction.create(
-      baseProps({ id: 'tx-rb-2', kind: WagerTransactionKind.Rollback, referenceExternalTransactionId: 'ext-1' }),
+      baseProps({
+        id: 'tx-rb-2',
+        externalTransactionId: 'ext-rb-2',
+        kind: WagerTransactionKind.Rollback,
+        referenceExternalTransactionId: 'ext-win',
+      }),
     );
     expect(rollbackOfWin.ledgerDirectionFor(win)).toBe(LedgerDirection.Debit);
 
     const refund = WagerTransaction.create(
-      baseProps({ id: 'tx-refund', kind: WagerTransactionKind.Refund, referenceExternalTransactionId: 'ext-1' }),
+      baseProps({
+        id: 'tx-refund',
+        externalTransactionId: 'ext-refund',
+        kind: WagerTransactionKind.Refund,
+        referenceExternalTransactionId: 'ext-bet',
+      }),
     );
-    refund.markProcessed(undefined, NOW);
+    refund.markProcessed('internal-bet-id', NOW);
     const rollbackOfRefund = WagerTransaction.create(
-      baseProps({ id: 'tx-rb-3', kind: WagerTransactionKind.Rollback, referenceExternalTransactionId: 'ext-1' }),
+      baseProps({
+        id: 'tx-rb-3',
+        externalTransactionId: 'ext-rb-3',
+        kind: WagerTransactionKind.Rollback,
+        referenceExternalTransactionId: 'ext-refund',
+      }),
     );
     expect(rollbackOfRefund.ledgerDirectionFor(refund)).toBe(LedgerDirection.Debit);
   });
@@ -315,7 +452,10 @@ describe('ledgerDirectionFor', () => {
     });
 
     const rollback = WagerTransaction.create(
-      baseProps({ kind: WagerTransactionKind.Rollback, referenceExternalTransactionId: 'ext-1' }),
+      baseProps({
+        kind: WagerTransactionKind.Rollback,
+        referenceExternalTransactionId: 'opening:wallet-1', // id bate, so o kind e' invalido para ROLLBACK
+      }),
     );
 
     expect(() => rollback.ledgerDirectionFor(opening)).toThrow(InvalidReferenceError);

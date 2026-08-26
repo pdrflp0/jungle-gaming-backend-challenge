@@ -120,6 +120,13 @@ export class InvalidReferenceError extends Error {
   }
 }
 
+export class MissingResolvedReferenceError extends Error {
+  constructor(kind: WagerTransactionKind) {
+    super(`${kind} cannot be marked as processed without a resolved referenceTransactionId`);
+    this.name = 'MissingResolvedReferenceError';
+  }
+}
+
 export class WagerTransaction {
   private constructor(
     public readonly id: string,
@@ -243,16 +250,25 @@ export class WagerTransaction {
 
   markProcessed(referenceTransactionId: string | undefined, at: Date): void {
     this.assertNotTerminal();
+
+    if (this.requiresReference() && !referenceTransactionId) {
+      throw new MissingResolvedReferenceError(this.kind);
+    }
+
     this._status = WagerTransactionStatus.Processed;
     this._referenceTransactionId = referenceTransactionId;
     this._processedAt = at;
   }
 
   markPendingReference(): void {
-    this.assertNotTerminal();
+    if (this._status !== WagerTransactionStatus.Pending) {
+      throw new InvalidTransactionStateError(this._status);
+    }
+
     if (!this.requiresReference()) {
       throw new InvalidTransactionStateError(this._status);
     }
+
     this._status = WagerTransactionStatus.PendingReference;
   }
 
@@ -330,6 +346,7 @@ export class WagerTransaction {
   ): asserts reference is WagerTransaction {
     if (
       !reference ||
+      reference.externalTransactionId !== this.referenceExternalTransactionId ||
       reference.status !== WagerTransactionStatus.Processed ||
       reference.providerId !== this.providerId ||
       reference.playerId !== this.playerId ||
