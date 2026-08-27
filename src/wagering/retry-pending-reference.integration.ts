@@ -150,6 +150,42 @@ async function retryState(transactionId: string): Promise<{
   };
 }
 
+async function fetchTerminalDetails(transactionId: string): Promise<{
+  status: string;
+  failureCode: string | null;
+  resultBalanceAmount: string | null;
+  resultBalanceCurrency: string | null;
+  nextAttemptAt: Date | null;
+}> {
+  const rows = (await orm.em.getConnection().execute(
+    `SELECT status, failure_code, result_balance_amount, result_balance_currency, next_attempt_at
+     FROM wager_transactions WHERE id = ?`,
+    [transactionId],
+  )) as {
+    status: string;
+    failure_code: string | null;
+    result_balance_amount: string | null;
+    result_balance_currency: string | null;
+    next_attempt_at: string | Date | null;
+  }[];
+  return {
+    status: rows[0].status,
+    failureCode: rows[0].failure_code,
+    resultBalanceAmount: rows[0].result_balance_amount,
+    resultBalanceCurrency: rows[0].result_balance_currency,
+    nextAttemptAt: rows[0].next_attempt_at ? new Date(rows[0].next_attempt_at) : null,
+  };
+}
+
+async function countAllLedgerEntries(walletId: string): Promise<number> {
+  const rows = (await orm.em
+    .getConnection()
+    .execute('SELECT count(*)::int AS count FROM wallet_ledger_entries WHERE wallet_id = ?', [
+      walletId,
+    ])) as { count: number }[];
+  return rows[0].count;
+}
+
 /** Simula o TTL estourado sem esperar 30 minutos reais nem mudar os parametros de producao. */
 async function backdateCreatedAt(transactionId: string, minutesAgo: number): Promise<void> {
   await orm.em
@@ -324,28 +360,51 @@ describe('Worker de reprocessamento de PENDING_REFERENCE (Bloco 7b, integracao r
 
   test('referencia que nunca chega expira pelo TTL: REJECTED/REFERENCE_NOT_FOUND', async () => {
     const { walletId, playerId } = await createWallet('100.00');
-
-    const response = await submitWager(randomUUID(), {
+    const key = randomUUID();
+    const payload = {
       walletId,
       playerId,
       externalTransactionId: randomUUID(),
       kind: 'ROLLBACK',
       referenceExternalTransactionId: 'nunca-vai-chegar',
       money: { amount: '10.00', currency: 'BRL' },
-    });
+    };
+
+    const response = await submitWager(key, payload);
     expect(response.status).toBe(202);
     const { transactionId } = (await response.json()) as SubmitBody;
+
+    // so a OPENING gerou lancamento ate aqui — nada mais pode ser criado por
+    // uma transacao que nunca chega a mexer em saldo.
+    const ledgerCountBefore = await countAllLedgerEntries(walletId);
+    expect(ledgerCountBefore).toBe(1);
 
     // simula os 30 minutos de TTL passando, sem esperar de verdade.
     await backdateCreatedAt(transactionId, 31);
 
     expect(await worker.processDueBatch()).toBe(1);
 
-    const state = await retryState(transactionId);
-    expect(state.status).toBe('REJECTED');
-    expect(state.nextAttemptAt).toBeNull();
+    const details = await fetchTerminalDetails(transactionId);
+    expect(details.status).toBe('REJECTED');
+    expect(details.failureCode).toBe('REFERENCE_NOT_FOUND');
+    expect(details.resultBalanceAmount).toBe('100.00');
+    expect(details.resultBalanceCurrency).toBe('BRL');
+    expect(details.nextAttemptAt).toBeNull();
     expect(await walletBalance(walletId)).toBe('100.00');
-    expect(await countCreditLedgerEntries(walletId)).toBe(0);
+    expect(await countAllLedgerEntries(walletId)).toBe(ledgerCountBefore);
+
+    // reenvia exatamente a mesma Idempotency-Key e o mesmo payload depois da
+    // expiracao: replay do resultado terminal verdadeiro, nada inventado.
+    const replay = await submitWager(key, payload);
+    expect(replay.status).toBe(422);
+    const replayBody = (await replay.json()) as SubmitBody;
+    expect(replayBody.transactionId).toBe(transactionId);
+    expect(replayBody.idempotentReplay).toBe(true);
+    expect(replayBody.status).toBe('REJECTED');
+    expect(replayBody.failureCode).toBe('REFERENCE_NOT_FOUND');
+    expect(replayBody.balance).toEqual({ amount: '100.00', currency: 'BRL' });
+    expect(await walletBalance(walletId)).toBe('100.00');
+    expect(await countAllLedgerEntries(walletId)).toBe(ledgerCountBefore);
   });
 
   test('backoff: attempts e next_attempt_at avancam a cada tentativa sem resolver', async () => {
