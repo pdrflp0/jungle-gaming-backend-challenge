@@ -71,4 +71,12 @@ export class WagerTransactionEntity {
 
   @Property({ type: 'string', columnType: 'varchar(3)', nullable: true })
   resultBalanceCurrency?: string;
+
+  /** Quantas vezes o worker do Bloco 7b ja tentou resolver a referencia. */
+  @Property({ type: 'number', columnType: 'integer', default: 0 })
+  attempts!: number;
+
+  /** Quando o worker deve tentar de novo — NULL fora de PENDING_REFERENCE. */
+  @Property({ type: 'date', columnType: 'timestamptz', nullable: true })
+  nextAttemptAt?: Date;
 }

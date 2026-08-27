@@ -9,17 +9,9 @@ import {
 } from '@nestjs/common';
 import { DeadlockException, LockWaitTimeoutException, UniqueConstraintViolationException } from '@mikro-orm/core';
 import { EntityManager } from '@mikro-orm/postgresql';
-import {
-  InvalidMoneyAmountError,
-  InvalidMoneyCurrencyError,
-  Money,
-  MoneyAmountOverflowError,
-} from '../domain/money/money';
-import { InsufficientFundsError, WalletCurrencyMismatchError } from '../domain/wallet/wallet';
-import { LedgerDirection } from '../domain/wallet/wallet-ledger-entry';
+import { InvalidMoneyAmountError, InvalidMoneyCurrencyError, Money, MoneyAmountOverflowError } from '../domain/money/money';
 import {
   FailureCode,
-  InvalidReferenceError,
   InvalidWagerAmountError,
   MissingReferenceError,
   OpeningIsInternalError,
@@ -29,19 +21,16 @@ import {
 } from '../domain/wagering/wager-transaction';
 import { SubmitWagerTransactionDto } from './dto/submit-wager-transaction.dto';
 import { computePayloadHash } from './payload-hash';
+import { applyReferenceAwareOutcome } from './resolve-wager-reference';
 import {
   createSavepoint,
-  insertLedgerEntry,
   insertPendingWagerTransaction,
   rollbackToSavepoint,
-  selectExistingReversal,
   selectWagerTransactionByIdempotencyKey,
   selectWagerTransactionByProviderAndExternalId,
   selectWalletForUpdate,
   updateWagerTransactionOutcome,
   updateWagerTransactionPending,
-  updateWalletBalance,
-  wagerTransactionRowToDomain,
   walletRowToDomain,
   WagerTransactionRow,
 } from './wager-transaction.sql';
@@ -219,60 +208,23 @@ export class SubmitWagerTransactionUseCase {
           )
         : undefined;
 
-      if (shouldResolveReference && !referenceRow) {
+      // Nao encontrada, OU encontrada mas ainda ela mesma PENDING_REFERENCE:
+      // nos dois casos ainda pode virar valida depois — nao ha base para
+      // decidir agora. So rejeitamos quando a referencia e TERMINAL (ver
+      // applyReferenceAwareOutcome). O worker do Bloco 7b reprocessa isso.
+      const referenceUnresolved =
+        shouldResolveReference && (!referenceRow || referenceRow.status === WagerTransactionStatus.PendingReference);
+
+      if (referenceUnresolved) {
         transaction.markPendingReference();
         await updateWagerTransactionPending(em, transaction);
         outcome = { status: transaction.status };
         return;
       }
 
-      const referenceDomain = referenceRow ? wagerTransactionRowToDomain(referenceRow) : undefined;
-
-      try {
-        const direction = transaction.ledgerDirectionFor(referenceDomain);
-
-        // 3. verifica reversao anterior — so se aplica a REFUND/ROLLBACK, que
-        // sao os unicos kinds com a constraint UNIQUE(reference_transaction_id, kind).
-        let alreadyReversed = false;
-        if (
-          referenceDomain &&
-          (transaction.kind === WagerTransactionKind.Refund || transaction.kind === WagerTransactionKind.Rollback)
-        ) {
-          alreadyReversed = await selectExistingReversal(em, referenceDomain.id, transaction.kind);
-        }
-
-        // 4. aplica ou rejeita.
-        if (alreadyReversed) {
-          transaction.reject(FailureCode.ReferenceAlreadyReversed);
-        } else {
-          const ledgerEntry =
-            direction === LedgerDirection.Credit
-              ? wallet.credit({ money: transaction.money, transactionId: transaction.id, entryId: randomUUID(), now })
-              : wallet.debit({ money: transaction.money, transactionId: transaction.id, entryId: randomUUID(), now });
-          transaction.markProcessed(referenceDomain?.id, now);
-          await updateWalletBalance(em, wallet);
-          await insertLedgerEntry(em, ledgerEntry);
-        }
-      } catch (error) {
-        if (error instanceof InvalidReferenceError) {
-          transaction.reject(FailureCode.InvalidReference);
-        } else if (error instanceof InsufficientFundsError) {
-          transaction.reject(
-            transaction.kind === WagerTransactionKind.Rollback
-              ? FailureCode.ReversalWouldMakeBalanceNegative
-              : FailureCode.InsufficientFunds,
-          );
-        } else if (error instanceof WalletCurrencyMismatchError) {
-          transaction.reject(FailureCode.CurrencyMismatch);
-        } else if (error instanceof MoneyAmountOverflowError) {
-          transaction.reject(FailureCode.BalanceLimitExceeded);
-        } else {
-          throw error;
-        }
-      }
-
-      await updateWagerTransactionOutcome(em, transaction, wallet.balance);
-      outcome = { status: transaction.status, balance: wallet.balance };
+      // 3-4. valida a referencia (se houver), verifica reversao anterior e
+      // aplica ou rejeita — mesma logica que o worker de reprocessamento usa.
+      outcome = await applyReferenceAwareOutcome(em, transaction, wallet, referenceRow, now);
     });
 
     if (walletNotFound) {

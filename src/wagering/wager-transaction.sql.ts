@@ -58,6 +58,13 @@ export interface WagerTransactionRow {
   processed_at: Date | null;
   result_balance_amount: string | null;
   result_balance_currency: string | null;
+  attempts: number;
+  next_attempt_at: Date | null;
+}
+
+/** Linha PENDING_REFERENCE devida agora, com o veredito de TTL calculado pelo proprio Postgres. */
+export interface DuePendingReferenceRow extends WagerTransactionRow {
+  ttl_expired: boolean;
 }
 
 export function walletRowToDomain(row: WalletRow): Wallet {
@@ -211,11 +218,73 @@ export async function insertLedgerEntry(em: EntityManager, entry: WalletLedgerEn
   );
 }
 
-/** So marca PENDING_REFERENCE — nao mexe em processed_at/failure_code/result_balance, que ficam NULL. */
+/**
+ * Primeira vez que a transacao vira PENDING_REFERENCE (fluxo HTTP sincrono).
+ * attempts comeca em 0 (o worker ainda nao tentou nada) e a proxima tentativa
+ * fica devida imediatamente — o worker pega no proximo tick. Nao mexe em
+ * processed_at/failure_code/result_balance, que ficam NULL.
+ */
 export async function updateWagerTransactionPending(em: EntityManager, tx: WagerTransaction): Promise<void> {
-  await execute(em, 'UPDATE wager_transactions SET status = ? WHERE id = ?', [tx.status, tx.id]);
+  await execute(em, 'UPDATE wager_transactions SET status = ?, attempts = 0, next_attempt_at = now() WHERE id = ?', [
+    tx.status,
+    tx.id,
+  ]);
 }
 
+/**
+ * A referencia ainda nao foi resolvida (nao encontrada, ou encontrada mas
+ * ainda ela mesma PENDING_REFERENCE) — continua PENDING_REFERENCE, so
+ * incrementa attempts e reagenda a proxima tentativa. `delaySeconds` vem do
+ * backoff calculado em JS, mas o instante em si (`now()`) e sempre o do
+ * Postgres, nunca o relogio da aplicacao — evita divergencia de relogio
+ * entre instancias/maquinas diferentes.
+ */
+export async function updateWagerTransactionRetry(
+  em: EntityManager,
+  transactionId: string,
+  delaySeconds: number,
+): Promise<void> {
+  await execute(
+    em,
+    `UPDATE wager_transactions
+     SET attempts = attempts + 1, next_attempt_at = now() + make_interval(secs => ?)
+     WHERE id = ?`,
+    [delaySeconds, transactionId],
+  );
+}
+
+/**
+ * Reivindica, com FOR UPDATE SKIP LOCKED, uma linha PENDING_REFERENCE devida
+ * agora. Se outra instancia/worker ja estiver com essa linha travada, o
+ * Postgres simplesmente a pula em vez de esperar — por isso duas instancias
+ * rodando a mesma consulta ao mesmo tempo nunca pegam a mesma linha.
+ * `ttl_expired` e calculado pelo proprio Postgres (now() - created_at), nunca
+ * comparado contra o relogio da aplicacao.
+ */
+export async function selectDuePendingReferenceForUpdate(
+  em: EntityManager,
+  ttlMinutes: number,
+): Promise<DuePendingReferenceRow | undefined> {
+  const rows = await execute<DuePendingReferenceRow[]>(
+    em,
+    `SELECT *, (now() - created_at) > make_interval(mins => ?) AS ttl_expired
+     FROM wager_transactions
+     WHERE status = 'PENDING_REFERENCE' AND next_attempt_at <= now()
+     ORDER BY next_attempt_at, id
+     FOR UPDATE SKIP LOCKED
+     LIMIT 1`,
+    [ttlMinutes],
+  );
+  return rows[0];
+}
+
+/**
+ * Grava um desfecho terminal (PROCESSED ou REJECTED). Sempre zera
+ * next_attempt_at — uma transacao terminal nunca mais e devida pelo worker,
+ * a constraint wager_transactions_next_attempt_consistency exige isso.
+ * attempts fica como estava (contagem historica de quantas vezes o worker
+ * tentou antes de chegar aqui).
+ */
 export async function updateWagerTransactionOutcome(
   em: EntityManager,
   tx: WagerTransaction,
@@ -225,7 +294,7 @@ export async function updateWagerTransactionOutcome(
     em,
     `UPDATE wager_transactions
      SET status = ?, processed_at = ?, failure_code = ?, reference_transaction_id = ?,
-         result_balance_amount = ?, result_balance_currency = ?
+         result_balance_amount = ?, result_balance_currency = ?, next_attempt_at = NULL
      WHERE id = ?`,
     [
       tx.status,
