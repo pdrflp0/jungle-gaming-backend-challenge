@@ -6,11 +6,12 @@ import { WalletLedgerEntryEntity } from '../infra/database/entities/wallet-ledge
 import { GetWalletLedgerUseCase } from './get-wallet-ledger.use-case';
 import { GetWalletUseCase } from './get-wallet.use-case';
 import { OpenWalletUseCase } from './open-wallet.use-case';
+import { ReconcileWalletUseCase } from './reconcile-wallet.use-case';
 import { WalletsController } from './wallets.controller';
 
 @Module({
   imports: [MikroOrmModule.forFeature([WalletEntity, WagerTransactionEntity, WalletLedgerEntryEntity])],
   controllers: [WalletsController],
-  providers: [OpenWalletUseCase, GetWalletUseCase, GetWalletLedgerUseCase],
+  providers: [OpenWalletUseCase, GetWalletUseCase, GetWalletLedgerUseCase, ReconcileWalletUseCase],
 })
 export class WalletsModule {}
