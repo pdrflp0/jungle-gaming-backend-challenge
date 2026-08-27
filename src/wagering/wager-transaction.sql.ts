@@ -118,6 +118,15 @@ export async function selectWalletForUpdate(em: EntityManager, walletId: string)
   return rows[0];
 }
 
+/** Busca de leitura por id interno (GET /wagering/transactions/:transactionId, Bloco 8a). */
+export async function selectWagerTransactionById(
+  em: EntityManager,
+  id: string,
+): Promise<WagerTransactionRow | undefined> {
+  const rows = await execute<WagerTransactionRow[]>(em, 'SELECT * FROM wager_transactions WHERE id = ?', [id]);
+  return rows[0];
+}
+
 /** Resolve uma referencia (REFUND/ROLLBACK/WIN opcional) por provider + externalTransactionId. */
 export async function selectWagerTransactionByProviderAndExternalId(
   em: EntityManager,

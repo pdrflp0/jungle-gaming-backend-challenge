@@ -1,11 +1,15 @@
-import { BadRequestException, Body, Controller, Headers, Post, Res } from '@nestjs/common';
+import { BadRequestException, Body, Controller, Get, Headers, Param, ParseUUIDPipe, Post, Res } from '@nestjs/common';
 import type { Response } from 'express';
 import { SubmitWagerTransactionDto } from './dto/submit-wager-transaction.dto';
+import { GetWagerTransactionUseCase, WagerTransactionQueryResponse } from './get-wager-transaction.use-case';
 import { SubmitWagerTransactionUseCase } from './submit-wager-transaction.use-case';
 
 @Controller('wagering')
 export class WageringController {
-  constructor(private readonly useCase: SubmitWagerTransactionUseCase) {}
+  constructor(
+    private readonly useCase: SubmitWagerTransactionUseCase,
+    private readonly getWagerTransaction: GetWagerTransactionUseCase,
+  ) {}
 
   @Post('transactions')
   async submit(
@@ -20,5 +24,10 @@ export class WageringController {
     const result = await this.useCase.execute(idempotencyKey, dto);
     res.status(result.httpStatus);
     return result.body;
+  }
+
+  @Get('transactions/:transactionId')
+  async getById(@Param('transactionId', ParseUUIDPipe) transactionId: string): Promise<WagerTransactionQueryResponse> {
+    return this.getWagerTransaction.byId(transactionId);
   }
 }
