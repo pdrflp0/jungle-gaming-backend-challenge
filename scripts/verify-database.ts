@@ -183,6 +183,70 @@ async function runVerification(trx: Knex.Transaction): Promise<void> {
         [randomUUID(), walletId, playerId],
       ),
   );
+
+  // --- Bloco 9a.1: Inbox e Outbox --------------------------------------
+
+  const outboxId = randomUUID();
+
+  await trx.raw(
+    `INSERT INTO inbox_messages (message_id, consumer_name, payload_hash, received_at)
+     VALUES ('msg-1', 'wager-transactions-consumer', 'hash-inbox', now())`,
+  );
+  console.log('OK — insercao valida aceita: inbox_messages');
+
+  await trx.raw(
+    `INSERT INTO outbox_messages (id, aggregate_id, event_type, payload, occurred_at, attempts, next_attempt_at)
+     VALUES (?, ?, 'WagerTransactionProcessed', '{"eventId":"e1"}'::jsonb, now(), 0, now())`,
+    [outboxId, betId],
+  );
+  console.log('OK — insercao valida aceita: outbox_messages');
+
+  await expectRejected(
+    trx,
+    'inbox duplicada (consumerName + messageId)',
+    byConstraint('inbox_messages_pkey'),
+    (sp) =>
+      sp.raw(
+        `INSERT INTO inbox_messages (message_id, consumer_name, payload_hash, received_at)
+         VALUES ('msg-1', 'wager-transactions-consumer', 'hash-outra', now())`,
+      ),
+  );
+
+  await expectRejected(
+    trx,
+    'outbox com attempts negativo',
+    byConstraint('outbox_messages_attempts_non_negative'),
+    (sp) =>
+      sp.raw(
+        `INSERT INTO outbox_messages (id, aggregate_id, event_type, payload, occurred_at, attempts, next_attempt_at)
+         VALUES (?, ?, 'WagerTransactionProcessed', '{}'::jsonb, now(), -1, now())`,
+        [randomUUID(), betId],
+      ),
+  );
+
+  await expectRejected(
+    trx,
+    'outbox pendente sem next_attempt_at',
+    byConstraint('outbox_messages_next_attempt_consistency'),
+    (sp) =>
+      sp.raw(
+        `INSERT INTO outbox_messages (id, aggregate_id, event_type, payload, occurred_at, attempts, next_attempt_at, published_at)
+         VALUES (?, ?, 'WagerTransactionProcessed', '{}'::jsonb, now(), 0, NULL, NULL)`,
+        [randomUUID(), betId],
+      ),
+  );
+
+  await expectRejected(
+    trx,
+    'outbox publicada mantendo next_attempt_at preenchido',
+    byConstraint('outbox_messages_next_attempt_consistency'),
+    (sp) =>
+      sp.raw(
+        `INSERT INTO outbox_messages (id, aggregate_id, event_type, payload, occurred_at, attempts, next_attempt_at, published_at)
+         VALUES (?, ?, 'WagerTransactionProcessed', '{}'::jsonb, now(), 0, now(), now())`,
+        [randomUUID(), betId],
+      ),
+  );
 }
 
 async function main(): Promise<void> {
