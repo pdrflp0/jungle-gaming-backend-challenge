@@ -15,5 +15,42 @@ services:
       timeout: 5s
       retries: 10
 
+  # Bloco 9a.3 — fundacao de mensageria (CHALLENGE.md secoes 4 e 10).
+  # So o servico SQS e ligado; nenhum consumidor/publisher existe ainda.
+  localstack:
+    image: localstack/localstack:3.8.1
+    environment:
+      SERVICES: sqs
+      DEFAULT_REGION: us-east-1
+    ports:
+      - '${LOCALSTACK_PORT:-4566}:4566'
+    healthcheck:
+      # Prova que a API SQS esta de verdade utilizavel — nao so que o
+      # processo HTTP responde. Roda dentro do proprio container, onde
+      # `awslocal` sempre aponta para o LocalStack local.
+      test: ['CMD-SHELL', 'awslocal sqs list-queues >/dev/null 2>&1']
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  # Servico "one-shot": cria as filas e termina. Determinístico em qualquer
+  # SO desde o desenho — nao depende do bit executavel de nada montado do
+  # host (o interpretador e chamado explicitamente via entrypoint) e fala
+  # com a fila pelo nome do servico (`localstack`), nunca `localhost` (que
+  # aqui seria o proprio container deste servico, nao o do LocalStack).
+  localstack-init:
+    image: localstack/localstack:3.8.1
+    depends_on:
+      localstack:
+        condition: service_healthy
+    environment:
+      AWS_ACCESS_KEY_ID: test
+      AWS_SECRET_ACCESS_KEY: test
+      AWS_DEFAULT_REGION: us-east-1
+    volumes:
+      - ./scripts/localstack-init/create-queues.sh:/create-queues.sh:ro
+    entrypoint: ['/bin/sh', '/create-queues.sh']
+    restart: 'no'
+
 volumes:
   postgres_data:
