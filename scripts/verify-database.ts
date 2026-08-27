@@ -71,8 +71,8 @@ async function runVerification(trx: Knex.Transaction): Promise<void> {
     `INSERT INTO wager_transactions (
        id, provider_id, external_transaction_id, idempotency_key, payload_hash,
        wallet_id, player_id, round_id, game_id, kind, amount, currency,
-       status, created_at, processed_at
-     ) VALUES (?, 'provider-a', 'ext-bet', 'provider-a:ext-bet', 'hash', ?, ?, 'round-1', 'game-1', 'BET', '25.00', 'BRL', 'PROCESSED', now(), now())`,
+       status, created_at, processed_at, correlation_id
+     ) VALUES (?, 'provider-a', 'ext-bet', 'provider-a:ext-bet', 'hash', ?, ?, 'round-1', 'game-1', 'BET', '25.00', 'BRL', 'PROCESSED', now(), now(), 'correlation-verify')`,
     [betId, walletId, playerId],
   );
 
@@ -80,8 +80,8 @@ async function runVerification(trx: Knex.Transaction): Promise<void> {
     `INSERT INTO wager_transactions (
        id, provider_id, external_transaction_id, idempotency_key, payload_hash,
        wallet_id, player_id, round_id, game_id, kind, amount, currency,
-       status, created_at, processed_at
-     ) VALUES (?, 'provider-a', 'ext-bet-2', 'provider-a:ext-bet-2', 'hash', ?, ?, 'round-1', 'game-1', 'BET', '10.00', 'BRL', 'PROCESSED', now(), now())`,
+       status, created_at, processed_at, correlation_id
+     ) VALUES (?, 'provider-a', 'ext-bet-2', 'provider-a:ext-bet-2', 'hash', ?, ?, 'round-1', 'game-1', 'BET', '10.00', 'BRL', 'PROCESSED', now(), now(), 'correlation-verify')`,
     [secondBetId, walletId, playerId],
   );
 
@@ -163,8 +163,8 @@ async function runVerification(trx: Knex.Transaction): Promise<void> {
         `INSERT INTO wager_transactions (
            id, provider_id, external_transaction_id, idempotency_key, payload_hash,
            wallet_id, player_id, round_id, game_id, kind, amount, currency,
-           status, created_at
-         ) VALUES (?, 'provider-a', 'ext-bet', 'provider-a:ext-bet-dup', 'hash', ?, ?, 'round-1', 'game-1', 'BET', '10.00', 'BRL', 'PENDING', now())`,
+           status, created_at, correlation_id
+         ) VALUES (?, 'provider-a', 'ext-bet', 'provider-a:ext-bet-dup', 'hash', ?, ?, 'round-1', 'game-1', 'BET', '10.00', 'BRL', 'PENDING', now(), 'correlation-verify')`,
         [randomUUID(), walletId, playerId],
       ),
   );
@@ -178,8 +178,8 @@ async function runVerification(trx: Knex.Transaction): Promise<void> {
         `INSERT INTO wager_transactions (
            id, provider_id, external_transaction_id, idempotency_key, payload_hash,
            wallet_id, player_id, round_id, game_id, kind, amount, currency,
-           status, created_at
-         ) VALUES (?, 'provider-b', 'ext-other', 'provider-a:ext-bet', 'hash', ?, ?, 'round-1', 'game-1', 'BET', '10.00', 'BRL', 'PENDING', now())`,
+           status, created_at, correlation_id
+         ) VALUES (?, 'provider-b', 'ext-other', 'provider-a:ext-bet', 'hash', ?, ?, 'round-1', 'game-1', 'BET', '10.00', 'BRL', 'PENDING', now(), 'correlation-verify')`,
         [randomUUID(), walletId, playerId],
       ),
   );

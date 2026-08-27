@@ -40,7 +40,7 @@ beforeAll(async () => {
 });
 
 afterEach(async () => {
-  await orm.em.getConnection().execute('TRUNCATE TABLE wallet_ledger_entries, wager_transactions, wallets');
+  await orm.em.getConnection().execute('TRUNCATE TABLE outbox_messages, wallet_ledger_entries, wager_transactions, wallets');
 });
 
 afterAll(async () => {

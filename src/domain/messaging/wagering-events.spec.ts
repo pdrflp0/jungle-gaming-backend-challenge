@@ -1,4 +1,5 @@
 import { describe, expect, test } from 'bun:test';
+import { FailureCode, WagerTransactionKind } from '../wagering/wager-transaction';
 import { LedgerDirection } from '../wallet/wallet-ledger-entry';
 import {
   WagerTransactionPendingReference,
@@ -25,7 +26,7 @@ describe('WagerTransactionProcessed', () => {
         walletId: 'wallet-1',
         playerId: 'player-1',
         providerId: 'provider-a',
-        kind: 'BET',
+        kind: WagerTransactionKind.Bet,
         money: { amount: '25.00', currency: 'BRL' },
         balance: { amount: '75.00', currency: 'BRL' },
         processedAt: OCCURRED_AT.toISOString(),
@@ -45,7 +46,7 @@ describe('WagerTransactionProcessed', () => {
         walletId: 'wallet-1',
         playerId: 'player-1',
         providerId: 'provider-a',
-        kind: 'BET',
+        kind: WagerTransactionKind.Bet,
         money: { amount: '25.00', currency: 'BRL' },
         balance: { amount: '75.00', currency: 'BRL' },
         processedAt: OCCURRED_AT.toISOString(),
@@ -64,7 +65,7 @@ describe('WagerTransactionProcessed', () => {
         walletId: 'wallet-2',
         playerId: 'player-2',
         providerId: 'provider-a',
-        kind: 'LOSS',
+        kind: WagerTransactionKind.Loss,
         money: { amount: '10.00', currency: 'BRL' },
         balance: { amount: '75.00', currency: 'BRL' },
         processedAt: OCCURRED_AT.toISOString(),
@@ -84,16 +85,16 @@ describe('WagerTransactionRejected', () => {
         walletId: 'wallet-1',
         playerId: 'player-1',
         providerId: 'provider-a',
-        kind: 'BET',
+        kind: WagerTransactionKind.Bet,
         money: { amount: '999999.00', currency: 'BRL' },
         balance: { amount: '75.00', currency: 'BRL' },
-        failureCode: 'INSUFFICIENT_FUNDS',
+        failureCode: FailureCode.InsufficientFunds,
       },
     });
 
     expect(event.eventType).toBe('WagerTransactionRejected');
     expect(event.version).toBe(1);
-    expect(event.toJSON().data.failureCode).toBe('INSUFFICIENT_FUNDS');
+    expect(event.toJSON().data.failureCode).toBe(FailureCode.InsufficientFunds);
     expect(typeof event.toJSON().data.money.amount).toBe('string');
   });
 });
@@ -138,7 +139,7 @@ describe('WagerTransactionPendingReference', () => {
         walletId: 'wallet-1',
         playerId: 'player-1',
         providerId: 'provider-a',
-        kind: 'REFUND',
+        kind: WagerTransactionKind.Refund,
         referenceExternalTransactionId: 'ext-bet-1',
         money: { amount: '25.00', currency: 'BRL' },
       },

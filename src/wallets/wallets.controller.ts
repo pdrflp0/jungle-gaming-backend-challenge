@@ -18,8 +18,14 @@ export class WalletsController {
   ) {}
 
   @Post()
-  async open(@Body() dto: OpenWalletDto): Promise<OpenWalletResult> {
-    return this.openWallet.execute(dto);
+  async open(
+    @Body() dto: OpenWalletDto,
+    @Headers('x-correlation-id') correlationIdHeader: string | undefined,
+    @Res({ passthrough: true }) res: Response,
+  ): Promise<OpenWalletResult> {
+    const correlationId = resolveCorrelationId(correlationIdHeader);
+    res.setHeader('X-Correlation-Id', correlationId);
+    return this.openWallet.execute(dto, correlationId);
   }
 
   @Get(':walletId')

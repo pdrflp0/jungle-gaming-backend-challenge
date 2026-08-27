@@ -1,7 +1,11 @@
+import { randomUUID } from 'node:crypto';
 import { Injectable } from '@nestjs/common';
 import { Interval } from '@nestjs/schedule';
 import { EntityManager } from '@mikro-orm/postgresql';
+import { OutboxMessage } from '../domain/messaging/outbox-message';
+import { WagerTransactionRejected } from '../domain/messaging/wagering-events';
 import { FailureCode, WagerTransactionStatus } from '../domain/wagering/wager-transaction';
+import { insertOutboxMessage } from '../messaging/outbox.sql';
 import { applyReferenceAwareOutcome } from './resolve-wager-reference';
 import {
   computeNextAttemptDelaySeconds,
@@ -92,9 +96,38 @@ export class RetryPendingReferenceWorker {
       const transaction = wagerTransactionRowToDomain(dueRow);
       const now = new Date();
 
+      // Preservados desde quando a transacao entrou em PENDING_REFERENCE
+      // (submit-wager-transaction.use-case.ts) — o worker nunca inventa
+      // nenhum dos dois. causationId fica undefined so para linhas legadas
+      // que nunca passaram por ali (pending_reference_event_id NULL).
+      const correlationId = dueRow.correlation_id;
+      const causationId = dueRow.pending_reference_event_id ?? undefined;
+
       if (dueRow.ttl_expired) {
         transaction.reject(FailureCode.ReferenceNotFound);
         await updateWagerTransactionOutcome(em, transaction, wallet.balance);
+        await insertOutboxMessage(
+          em,
+          OutboxMessage.enqueue(
+            WagerTransactionRejected.create({
+              eventId: randomUUID(),
+              aggregateId: transaction.id,
+              correlationId,
+              causationId,
+              occurredAt: now,
+              data: {
+                transactionId: transaction.id,
+                walletId: transaction.walletId,
+                playerId: transaction.playerId,
+                providerId: transaction.providerId,
+                kind: transaction.kind,
+                money: transaction.money.toJSON(),
+                balance: wallet.balance.toJSON(),
+                failureCode: transaction.failureCode as FailureCode,
+              },
+            }),
+          ),
+        );
         return;
       }
 
@@ -112,7 +145,7 @@ export class RetryPendingReferenceWorker {
         return;
       }
 
-      await applyReferenceAwareOutcome(em, transaction, wallet, referenceRow, now);
+      await applyReferenceAwareOutcome(em, transaction, wallet, referenceRow, now, correlationId, causationId);
     });
 
     return claimed;

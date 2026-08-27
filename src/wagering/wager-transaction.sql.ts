@@ -60,6 +60,8 @@ export interface WagerTransactionRow {
   result_balance_currency: string | null;
   attempts: number;
   next_attempt_at: Date | null;
+  correlation_id: string;
+  pending_reference_event_id: string | null;
 }
 
 /** Linha PENDING_REFERENCE devida agora, com o veredito de TTL calculado pelo proprio Postgres. */
@@ -170,14 +172,18 @@ export async function rollbackToSavepoint(em: EntityManager, name: string): Prom
   await execute(em, `ROLLBACK TO SAVEPOINT ${name}`);
 }
 
-export async function insertPendingWagerTransaction(em: EntityManager, tx: WagerTransaction): Promise<void> {
+export async function insertPendingWagerTransaction(
+  em: EntityManager,
+  tx: WagerTransaction,
+  correlationId: string,
+): Promise<void> {
   await execute(
     em,
     `INSERT INTO wager_transactions (
        id, provider_id, external_transaction_id, idempotency_key, payload_hash,
        wallet_id, player_id, round_id, game_id, kind, amount, currency,
-       reference_external_transaction_id, status, created_at
-     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       reference_external_transaction_id, status, created_at, correlation_id
+     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [
       tx.id,
       tx.providerId,
@@ -194,6 +200,7 @@ export async function insertPendingWagerTransaction(em: EntityManager, tx: Wager
       tx.referenceExternalTransactionId ?? null,
       tx.status,
       tx.createdAt,
+      correlationId,
     ],
   );
 }
@@ -232,12 +239,23 @@ export async function insertLedgerEntry(em: EntityManager, entry: WalletLedgerEn
  * attempts comeca em 0 (o worker ainda nao tentou nada) e a proxima tentativa
  * fica devida imediatamente — o worker pega no proximo tick. Nao mexe em
  * processed_at/failure_code/result_balance, que ficam NULL.
+ *
+ * `pendingReferenceEventId` e o eventId do WagerTransactionPendingReference
+ * que esta sendo inserido na Outbox na MESMA transacao — gravado aqui para o
+ * worker usar depois como causationId do evento terminal (Bloco 9a.2).
  */
-export async function updateWagerTransactionPending(em: EntityManager, tx: WagerTransaction): Promise<void> {
-  await execute(em, 'UPDATE wager_transactions SET status = ?, attempts = 0, next_attempt_at = now() WHERE id = ?', [
-    tx.status,
-    tx.id,
-  ]);
+export async function updateWagerTransactionPending(
+  em: EntityManager,
+  tx: WagerTransaction,
+  pendingReferenceEventId: string,
+): Promise<void> {
+  await execute(
+    em,
+    `UPDATE wager_transactions
+     SET status = ?, attempts = 0, next_attempt_at = now(), pending_reference_event_id = ?
+     WHERE id = ?`,
+    [tx.status, pendingReferenceEventId, tx.id],
+  );
 }
 
 /**

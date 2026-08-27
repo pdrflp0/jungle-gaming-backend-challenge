@@ -79,4 +79,17 @@ export class WagerTransactionEntity {
   /** Quando o worker deve tentar de novo — NULL fora de PENDING_REFERENCE. */
   @Property({ type: 'date', columnType: 'timestamptz', nullable: true })
   nextAttemptAt?: Date;
+
+  /** correlationId que originou o processamento desta transacao (Bloco 9a.2). */
+  @Property({ type: 'string' })
+  correlationId!: string;
+
+  /**
+   * eventId do WagerTransactionPendingReference emitido quando esta linha
+   * entrou em PENDING_REFERENCE — o worker usa como causationId do evento
+   * terminal. NULL para linhas que nunca passaram por PENDING_REFERENCE.
+   * Preservado apos a transacao virar terminal (nunca zerado).
+   */
+  @Property({ type: 'string', columnType: 'uuid', nullable: true })
+  pendingReferenceEventId?: string;
 }

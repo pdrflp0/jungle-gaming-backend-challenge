@@ -8,8 +8,11 @@ import {
   Money,
   MoneyAmountOverflowError,
 } from '../domain/money/money';
+import { OutboxMessage } from '../domain/messaging/outbox-message';
+import { WagerTransactionProcessed, WalletBalanceChanged } from '../domain/messaging/wagering-events';
 import { WagerTransaction } from '../domain/wagering/wager-transaction';
 import { Wallet } from '../domain/wallet/wallet';
+import { insertOutboxMessage } from '../messaging/outbox.sql';
 import { OpenWalletDto } from './dto/open-wallet.dto';
 import { toLedgerEntryEntity, toWagerTransactionEntity, toWalletEntity } from './persistence.mapper';
 
@@ -33,7 +36,7 @@ function getConstraintName(error: unknown): string | undefined {
 export class OpenWalletUseCase {
   constructor(private readonly em: EntityManager) {}
 
-  async execute(dto: OpenWalletDto): Promise<OpenWalletResult> {
+  async execute(dto: OpenWalletDto, correlationId: string): Promise<OpenWalletResult> {
     const id = randomUUID();
     const now = new Date();
 
@@ -88,11 +91,48 @@ export class OpenWalletUseCase {
         await em.flush();
 
         if (openingTransaction && openingEntry) {
-          em.persist(toWagerTransactionEntity(openingTransaction));
+          const openingEntity = toWagerTransactionEntity(openingTransaction);
+          openingEntity.correlationId = correlationId;
+          em.persist(openingEntity);
           await em.flush();
 
           em.persist(toLedgerEntryEntity(openingEntry));
           await em.flush();
+
+          const processedEvent = WagerTransactionProcessed.create({
+            eventId: randomUUID(),
+            aggregateId: openingTransaction.id,
+            correlationId,
+            occurredAt: now,
+            data: {
+              transactionId: openingTransaction.id,
+              walletId: wallet.id,
+              playerId: wallet.playerId,
+              providerId: openingTransaction.providerId,
+              kind: openingTransaction.kind,
+              money: initialBalance.toJSON(),
+              balance: wallet.balance.toJSON(),
+              processedAt: now.toISOString(),
+            },
+          });
+          await insertOutboxMessage(em, OutboxMessage.enqueue(processedEvent));
+
+          const balanceChangedEvent = WalletBalanceChanged.create({
+            eventId: randomUUID(),
+            aggregateId: wallet.id,
+            correlationId,
+            occurredAt: now,
+            data: {
+              walletId: wallet.id,
+              transactionId: openingTransaction.id,
+              direction: openingEntry.direction,
+              money: openingEntry.money.toJSON(),
+              balanceBefore: openingEntry.balanceBefore.toJSON(),
+              balanceAfter: openingEntry.balanceAfter.toJSON(),
+              walletVersion: wallet.version,
+            },
+          });
+          await insertOutboxMessage(em, OutboxMessage.enqueue(balanceChangedEvent));
         }
       });
     } catch (error) {

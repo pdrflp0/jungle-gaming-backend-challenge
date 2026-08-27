@@ -4,6 +4,7 @@ import { MikroORM } from '@mikro-orm/postgresql';
 import config from '../../../mikro-orm.config';
 import { InboxMessageEntity } from '../../infra/database/entities/inbox-message.entity';
 import { OutboxMessageEntity } from '../../infra/database/entities/outbox-message.entity';
+import { WagerTransactionKind } from '../wagering/wager-transaction';
 import { InboxMessage } from './inbox-message';
 import { OutboxMessage } from './outbox-message';
 import { WagerTransactionProcessed } from './wagering-events';
@@ -44,7 +45,7 @@ function buildProcessedEvent() {
       walletId: '0192f298-0000-7000-8000-000000000005',
       playerId: '0192f298-0000-7000-8000-000000000006',
       providerId: 'provider-a',
-      kind: 'BET',
+      kind: WagerTransactionKind.Bet,
       money: { amount: '25.00', currency: 'BRL' },
       balance: { amount: '75.00', currency: 'BRL' },
       processedAt: '2026-08-29T12:00:00.000Z',

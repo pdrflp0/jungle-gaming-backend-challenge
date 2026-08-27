@@ -1,5 +1,6 @@
 import { BadRequestException, Body, Controller, Get, Headers, Param, ParseUUIDPipe, Post, Res } from '@nestjs/common';
 import type { Response } from 'express';
+import { resolveCorrelationId } from '../observability/correlation-id';
 import { SubmitWagerTransactionDto } from './dto/submit-wager-transaction.dto';
 import { GetWagerTransactionUseCase, WagerTransactionQueryResponse } from './get-wager-transaction.use-case';
 import { SubmitWagerTransactionUseCase } from './submit-wager-transaction.use-case';
@@ -14,6 +15,7 @@ export class WageringController {
   @Post('transactions')
   async submit(
     @Headers('idempotency-key') idempotencyKey: string | undefined,
+    @Headers('x-correlation-id') correlationIdHeader: string | undefined,
     @Body() dto: SubmitWagerTransactionDto,
     @Res({ passthrough: true }) res: Response,
   ) {
@@ -21,7 +23,12 @@ export class WageringController {
       throw new BadRequestException('Idempotency-Key header is required');
     }
 
-    const result = await this.useCase.execute(idempotencyKey, dto);
+    // Resolvido e ecoado ANTES de chamar o use case: mesmo que a chamada
+    // termine em excecao (409/422/etc.), o header ja fica setado na resposta.
+    const correlationId = resolveCorrelationId(correlationIdHeader);
+    res.setHeader('X-Correlation-Id', correlationId);
+
+    const result = await this.useCase.execute(idempotencyKey, dto, correlationId);
     res.status(result.httpStatus);
     return result.body;
   }

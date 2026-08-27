@@ -1,4 +1,5 @@
 import { describe, expect, test } from 'bun:test';
+import { WagerTransactionKind } from '../wagering/wager-transaction';
 import { OutboxMessage, OutboxMessageAlreadyPublishedError } from './outbox-message';
 import { WagerTransactionProcessed } from './wagering-events';
 
@@ -15,7 +16,7 @@ function buildEvent() {
       walletId: 'wallet-1',
       playerId: 'player-1',
       providerId: 'provider-a',
-      kind: 'BET',
+      kind: WagerTransactionKind.Bet,
       money: { amount: '25.00', currency: 'BRL' },
       balance: { amount: '75.00', currency: 'BRL' },
       processedAt: OCCURRED_AT.toISOString(),

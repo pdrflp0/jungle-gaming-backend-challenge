@@ -10,6 +10,12 @@ import {
 import { DeadlockException, LockWaitTimeoutException, UniqueConstraintViolationException } from '@mikro-orm/core';
 import { EntityManager } from '@mikro-orm/postgresql';
 import { InvalidMoneyAmountError, InvalidMoneyCurrencyError, Money, MoneyAmountOverflowError } from '../domain/money/money';
+import { OutboxMessage } from '../domain/messaging/outbox-message';
+import {
+  WagerTransactionPendingReference,
+  WagerTransactionProcessed,
+  WagerTransactionRejected,
+} from '../domain/messaging/wagering-events';
 import {
   FailureCode,
   InvalidWagerAmountError,
@@ -20,6 +26,7 @@ import {
   WagerTransactionStatus,
 } from '../domain/wagering/wager-transaction';
 import { SubmitWagerTransactionDto } from './dto/submit-wager-transaction.dto';
+import { insertOutboxMessage } from '../messaging/outbox.sql';
 import { computePayloadHash } from './payload-hash';
 import { applyReferenceAwareOutcome } from './resolve-wager-reference';
 import {
@@ -62,9 +69,13 @@ function getConstraintName(error: unknown): string | undefined {
 export class SubmitWagerTransactionUseCase {
   constructor(private readonly em: EntityManager) {}
 
-  async execute(idempotencyKey: string, dto: SubmitWagerTransactionDto): Promise<SubmitWagerTransactionResponse> {
+  async execute(
+    idempotencyKey: string,
+    dto: SubmitWagerTransactionDto,
+    correlationId: string,
+  ): Promise<SubmitWagerTransactionResponse> {
     try {
-      return await this.run(idempotencyKey, dto);
+      return await this.run(idempotencyKey, dto, correlationId);
     } catch (error) {
       if (error instanceof DeadlockException || error instanceof LockWaitTimeoutException) {
         throw new ServiceUnavailableException('Temporary database contention, please retry');
@@ -73,7 +84,11 @@ export class SubmitWagerTransactionUseCase {
     }
   }
 
-  private async run(idempotencyKey: string, dto: SubmitWagerTransactionDto): Promise<SubmitWagerTransactionResponse> {
+  private async run(
+    idempotencyKey: string,
+    dto: SubmitWagerTransactionDto,
+    correlationId: string,
+  ): Promise<SubmitWagerTransactionResponse> {
     const payloadHash = computePayloadHash({
       providerId: dto.providerId,
       externalTransactionId: dto.externalTransactionId,
@@ -153,7 +168,7 @@ export class SubmitWagerTransactionUseCase {
 
       await createSavepoint(em, 'reserve_wager_transaction');
       try {
-        await insertPendingWagerTransaction(em, transaction);
+        await insertPendingWagerTransaction(em, transaction, correlationId);
       } catch (error) {
         if (!(error instanceof UniqueConstraintViolationException)) {
           throw error;
@@ -186,6 +201,27 @@ export class SubmitWagerTransactionUseCase {
         // wallet existe, mas pertence a outro jogador — nao toca saldo nem ledger.
         transaction.reject(FailureCode.PlayerMismatch);
         await updateWagerTransactionOutcome(em, transaction, wallet.balance);
+        await insertOutboxMessage(
+          em,
+          OutboxMessage.enqueue(
+            WagerTransactionRejected.create({
+              eventId: randomUUID(),
+              aggregateId: transaction.id,
+              correlationId,
+              occurredAt: now,
+              data: {
+                transactionId: transaction.id,
+                walletId: transaction.walletId,
+                playerId: transaction.playerId,
+                providerId: transaction.providerId,
+                kind: transaction.kind,
+                money: transaction.money.toJSON(),
+                balance: wallet.balance.toJSON(),
+                failureCode: transaction.failureCode as FailureCode,
+              },
+            }),
+          ),
+        );
         outcome = { status: transaction.status, balance: wallet.balance };
         return;
       }
@@ -193,6 +229,27 @@ export class SubmitWagerTransactionUseCase {
       if (transaction.kind === WagerTransactionKind.Loss) {
         transaction.markProcessed(undefined, now);
         await updateWagerTransactionOutcome(em, transaction, wallet.balance);
+        await insertOutboxMessage(
+          em,
+          OutboxMessage.enqueue(
+            WagerTransactionProcessed.create({
+              eventId: randomUUID(),
+              aggregateId: transaction.id,
+              correlationId,
+              occurredAt: now,
+              data: {
+                transactionId: transaction.id,
+                walletId: transaction.walletId,
+                playerId: transaction.playerId,
+                providerId: transaction.providerId,
+                kind: transaction.kind,
+                money: transaction.money.toJSON(),
+                balance: wallet.balance.toJSON(),
+                processedAt: now.toISOString(),
+              },
+            }),
+          ),
+        );
         outcome = { status: transaction.status, balance: wallet.balance };
         return;
       }
@@ -217,14 +274,42 @@ export class SubmitWagerTransactionUseCase {
 
       if (referenceUnresolved) {
         transaction.markPendingReference();
-        await updateWagerTransactionPending(em, transaction);
+        // O eventId nasce aqui, uma unica vez, e e gravado tanto na propria
+        // WagerTransaction (pending_reference_event_id) quanto no evento —
+        // e o valor que o worker (Bloco 7b) vai usar depois como
+        // causationId do evento terminal (Bloco 9a.2).
+        const pendingReferenceEventId = randomUUID();
+        await updateWagerTransactionPending(em, transaction, pendingReferenceEventId);
+        await insertOutboxMessage(
+          em,
+          OutboxMessage.enqueue(
+            WagerTransactionPendingReference.create({
+              eventId: pendingReferenceEventId,
+              aggregateId: transaction.id,
+              correlationId,
+              occurredAt: now,
+              data: {
+                transactionId: transaction.id,
+                walletId: transaction.walletId,
+                playerId: transaction.playerId,
+                providerId: transaction.providerId,
+                kind: transaction.kind,
+                referenceExternalTransactionId: transaction.referenceExternalTransactionId as string,
+                money: transaction.money.toJSON(),
+              },
+            }),
+          ),
+        );
         outcome = { status: transaction.status };
         return;
       }
 
       // 3-4. valida a referencia (se houver), verifica reversao anterior e
       // aplica ou rejeita — mesma logica que o worker de reprocessamento usa.
-      outcome = await applyReferenceAwareOutcome(em, transaction, wallet, referenceRow, now);
+      // causationId fica undefined: este caminho HTTP sincrono nunca resolve
+      // uma referencia que passou por PENDING_REFERENCE antes (isso so
+      // acontece no worker, ver retry-pending-reference.worker.ts).
+      outcome = await applyReferenceAwareOutcome(em, transaction, wallet, referenceRow, now, correlationId);
     });
 
     if (walletNotFound) {

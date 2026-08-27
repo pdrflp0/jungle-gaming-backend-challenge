@@ -1,11 +1,13 @@
 import { MoneyProps } from '../money/money';
+import { FailureCode, WagerTransactionKind } from '../wagering/wager-transaction';
 import { LedgerDirection } from '../wallet/wallet-ledger-entry';
 import { IntegrationEvent, IntegrationEventProps } from './integration-event';
 
 /**
- * As quatro classes concretas exigidas pelo CHALLENGE.md secao 11. Nenhuma
- * delas e chamada por nenhum fluxo ainda (isso e o Bloco 9a.2) — aqui so
- * existe o contrato: forma do `data`, `eventType` e `version` no tipo.
+ * As quatro classes concretas exigidas pelo CHALLENGE.md secao 11. `kind` e
+ * `failureCode` usam os enums reais do dominio (nao `string`) — assim o
+ * TypeScript recusa qualquer valor que nao seja um membro real do enum nos
+ * pontos de criacao do evento, sem precisar de validacao manual em runtime.
  * Todo campo monetario e MoneyProps (string), nunca instancia de Money nem
  * number.
  */
@@ -15,7 +17,7 @@ export interface WagerTransactionProcessedData {
   walletId: string;
   playerId: string;
   providerId: string;
-  kind: string;
+  kind: WagerTransactionKind;
   money: MoneyProps;
   balance: MoneyProps;
   referenceTransactionId?: string;
@@ -40,10 +42,10 @@ export interface WagerTransactionRejectedData {
   walletId: string;
   playerId: string;
   providerId: string;
-  kind: string;
+  kind: WagerTransactionKind;
   money: MoneyProps;
   balance: MoneyProps;
-  failureCode: string;
+  failureCode: FailureCode;
 }
 
 export class WagerTransactionRejected extends IntegrationEvent<WagerTransactionRejectedData> {
@@ -88,7 +90,7 @@ export interface WagerTransactionPendingReferenceData {
   walletId: string;
   playerId: string;
   providerId: string;
-  kind: string;
+  kind: WagerTransactionKind;
   referenceExternalTransactionId: string;
   money: MoneyProps;
 }
