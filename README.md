@@ -1,6 +1,6 @@
 # Distributed Wagering Processor
 
-Serviço financeiro distribuído que processa transações de apostas (`BET → WIN | LOSS | REFUND | ROLLBACK`) recebidas via HTTP e via uma fila SQS FIFO, com foco em correção financeira, idempotência persistente, concorrência entre múltiplas instâncias e recuperação após falhas — os requisitos do desafio descrito em [`CHALLENGE.md`](./CHALLENGE.md).
+Serviço financeiro distribuído que processa transações de apostas (`BET → WIN | LOSS | REFUND | ROLLBACK`) recebidas via HTTP e via uma fila SQS FIFO, com foco em correção financeira, idempotência persistente, concorrência entre múltiplas instâncias e recuperação após falhas. Os requisitos do desafio descrito em [`CHALLENGE.md`](./CHALLENGE.md).
 
 As decisões de arquitetura, trade-offs e limitações conhecidas estão documentadas em [`ARCHITECTURE.md`](./ARCHITECTURE.md).
 
@@ -294,11 +294,11 @@ curl -s http://localhost:3000/health/ready
 
 ## Observabilidade
 
-Logs estruturados (JSON), métricas Prometheus e health checks separados (liveness/readiness) — detalhes de cada métrica, o que cada log carrega (e o que nunca carrega) estão em [`ARCHITECTURE.md`](./ARCHITECTURE.md#observabilidade).
+Logs estruturados (JSON), métricas Prometheus e health checks separados (liveness/readiness), detalhes de cada métrica, o que cada log carrega (e o que nunca carrega) estão em [`ARCHITECTURE.md`](./ARCHITECTURE.md#observabilidade).
 
 ## Autenticação
 
-Não implementada nesta entrega — decisão registrada e justificada em [`ARCHITECTURE.md`](./ARCHITECTURE.md#autenticação). Os endpoints de health ficam abertos por design, conforme a seção 2 do desafio.
+Não implementada nesta entrega, decisão registrada e justificada em [`ARCHITECTURE.md`](./ARCHITECTURE.md#autenticação). Os endpoints de health ficam abertos por design, conforme a seção 2 do desafio.
 
 ## Estrutura de pastas
 
