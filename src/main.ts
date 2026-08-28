@@ -12,6 +12,10 @@ async function bootstrap() {
   // testes que nao sao dele nunca setam esta variavel e nao precisam do
   // LocalStack no ar (ver wager-transaction-sqs-consumer.ts).
   process.env.WAGER_TRANSACTIONS_CONSUMER_ENABLED ??= 'true';
+  // Mesmo padrao para o publisher da Outbox (Bloco 9c) — desligado por
+  // padrao, testes que nao sao dele nunca setam esta variavel (ver
+  // outbox-publisher.worker.ts).
+  process.env.OUTBOX_PUBLISHER_ENABLED ??= 'true';
 
   const app = await NestFactory.create(AppModule);
   app.useGlobalPipes(

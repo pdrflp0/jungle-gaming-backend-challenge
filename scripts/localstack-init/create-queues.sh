@@ -11,6 +11,10 @@ ENDPOINT="http://localstack:4566"
 DLQ_NAME="wager-transactions-dlq.fifo"
 QUEUE_NAME="wager-transactions.fifo"
 MAX_RECEIVE_COUNT=5
+# Bloco 9c — fila de SAIDA do publisher da Outbox. O CHALLENGE.md nao nomeia
+# essa fila (so a de entrada, secao 10); "wager-transaction-events.fifo" e
+# uma decisao deste projeto, aprovada em bloco.
+EVENTS_QUEUE_NAME="wager-transaction-events.fifo"
 
 aws_local() {
   aws --endpoint-url "$ENDPOINT" "$@"
@@ -72,5 +76,21 @@ aws_local sqs create-queue \
   --attributes "file://$ATTRIBUTES_FILE"
 
 rm -f "$ATTRIBUTES_FILE"
+
+# --- Fila de eventos (Bloco 9c) — sem DLQ, de proposito ---
+#
+# A tabela outbox_messages no Postgres ja E a fonte persistente de retry:
+# uma linha so vira published_at depois de o SendMessage ter sucesso e o
+# commit terminar; enquanto isso nao acontece, ela nunca some (attempts e
+# next_attempt_at avancam com backoff, mas a linha continua ali para
+# sempre). Diferente da fila de ENTRADA — onde perder a mensagem seria
+# perder uma instrucao financeira que so existe no SQS —, aqui uma falha de
+# publicacao nunca perde o evento: ele so fica pendente por mais tempo.
+# Criar uma DLQ para esta fila duplicaria esse mecanismo de retry sem
+# necessidade e sem nenhum consumidor real definido para ela neste desafio.
+echo "Criando fila de eventos: $EVENTS_QUEUE_NAME"
+aws_local sqs create-queue \
+  --queue-name "$EVENTS_QUEUE_NAME" \
+  --attributes '{"FifoQueue":"true","ContentBasedDeduplication":"false"}'
 
 echo "Filas prontas."
