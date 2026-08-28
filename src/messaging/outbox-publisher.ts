@@ -1,6 +1,7 @@
 import { SendMessageCommand, SQSClient } from '@aws-sdk/client-sqs';
 import type { EntityManager } from '@mikro-orm/postgresql';
 import { computeOutboxNextAttemptDelaySeconds } from '../domain/messaging/outbox-retry-backoff';
+import { outboxPublishRetriesTotal } from '../observability/metrics';
 import { logStructuredWarning } from '../observability/structured-logger';
 import {
   markOutboxMessagePublished,
@@ -110,6 +111,7 @@ export async function publishDueOutboxMessage(
 
       const nextAttemptNumber = dueRow.attempts + 1;
       await scheduleOutboxMessageRetry(trxEm, dueRow.id, computeOutboxNextAttemptDelaySeconds(nextAttemptNumber));
+      outboxPublishRetriesTotal.inc({ event_type: dueRow.event_type });
     }
   });
 

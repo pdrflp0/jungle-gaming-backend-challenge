@@ -1,6 +1,7 @@
 import { Injectable, OnApplicationShutdown, OnModuleInit } from '@nestjs/common';
 import { DeleteMessageCommand, Message, ReceiveMessageCommand, SQSClient } from '@aws-sdk/client-sqs';
 import { EntityManager } from '@mikro-orm/postgresql';
+import { wagerTransactionProcessingDurationSeconds } from '../observability/metrics';
 import { logStructuredWarning } from '../observability/structured-logger';
 import {
   ConflictingInboxPayloadError,
@@ -122,6 +123,10 @@ export class WagerTransactionSqsConsumer implements OnModuleInit, OnApplicationS
     const rawBody = message.Body;
     const receiptHandle = message.ReceiptHandle;
 
+    // Latencia sempre observada em `finally` — sucesso ou erro. `messageId`
+    // do envelope nunca vira label (alta cardinalidade); so `source`/`outcome`.
+    const stopTimer = wagerTransactionProcessingDurationSeconds.startTimer({ source: 'sqs' });
+    let outcome: 'success' | 'error' = 'success';
     try {
       // Cada mensagem roda na sua PROPRIA transacao: em.transactional() cria
       // um fork novo a cada chamada (nunca reaproveita a transacao/conexao
@@ -133,9 +138,12 @@ export class WagerTransactionSqsConsumer implements OnModuleInit, OnApplicationS
       // tambem apaga aqui: a transacao ja commitou um resultado valido.
       await this.deleteMessage(receiptHandle);
     } catch (error) {
+      outcome = 'error';
       this.logProcessingFailure(error, message);
       // NUNCA apaga aqui. O SQS cuida de reentrega (visibility timeout) e,
       // apos maxReceiveCount=5, da DLQ — nenhum retry em memoria neste codigo.
+    } finally {
+      stopTimer({ outcome });
     }
   }
 

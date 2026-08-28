@@ -3,6 +3,7 @@ import { plainToInstance } from 'class-transformer';
 import { validate, ValidationError } from 'class-validator';
 import type { EntityManager } from '@mikro-orm/postgresql';
 import { markInboxMessageProcessed, selectInboxMessage, tryClaimInboxMessage } from '../messaging/inbox.sql';
+import { inboxDuplicatesDetectedTotal } from '../observability/metrics';
 import { WagerTransactionRequestedMessageDto } from './dto/sqs-wager-transaction-message.dto';
 import { computePayloadHash } from './payload-hash';
 import { SubmitWagerTransactionUseCase } from './submit-wager-transaction.use-case';
@@ -131,6 +132,7 @@ export async function processWagerTransactionMessage(
       throw new InconsistentInboxStateError(messageId);
     }
 
+    inboxDuplicatesDetectedTotal.inc();
     return 'duplicate';
   }
 

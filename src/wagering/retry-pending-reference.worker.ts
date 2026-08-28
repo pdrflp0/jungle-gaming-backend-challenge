@@ -6,6 +6,7 @@ import { OutboxMessage } from '../domain/messaging/outbox-message';
 import { WagerTransactionRejected } from '../domain/messaging/wagering-events';
 import { FailureCode, WagerTransactionStatus } from '../domain/wagering/wager-transaction';
 import { insertOutboxMessage } from '../messaging/outbox.sql';
+import { pendingReferenceRetriesTotal } from '../observability/metrics';
 import { applyReferenceAwareOutcome } from './resolve-wager-reference';
 import {
   computeNextAttemptDelaySeconds,
@@ -142,6 +143,7 @@ export class RetryPendingReferenceWorker {
       if (stillUnresolved) {
         const attemptNumber = dueRow.attempts + 1;
         await updateWagerTransactionRetry(em, transaction.id, computeNextAttemptDelaySeconds(attemptNumber));
+        pendingReferenceRetriesTotal.inc({ kind: transaction.kind });
         return;
       }
 

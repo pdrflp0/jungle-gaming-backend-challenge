@@ -1,6 +1,7 @@
 import { BadRequestException, Body, Controller, Get, Headers, Param, ParseUUIDPipe, Post, Res } from '@nestjs/common';
 import type { Response } from 'express';
 import { resolveCorrelationId } from '../observability/correlation-id';
+import { wagerTransactionProcessingDurationSeconds } from '../observability/metrics';
 import { SubmitWagerTransactionDto } from './dto/submit-wager-transaction.dto';
 import { GetWagerTransactionUseCase, WagerTransactionQueryResponse } from './get-wager-transaction.use-case';
 import { SubmitWagerTransactionUseCase } from './submit-wager-transaction.use-case';
@@ -28,9 +29,21 @@ export class WageringController {
     const correlationId = resolveCorrelationId(correlationIdHeader);
     res.setHeader('X-Correlation-Id', correlationId);
 
-    const result = await this.useCase.execute(idempotencyKey, dto, correlationId);
-    res.status(result.httpStatus);
-    return result.body;
+    // Latencia sempre observada em `finally` — sucesso ou erro — nunca so no
+    // caminho feliz. `outcome` e o unico label alem de `source`: nunca um id
+    // de transacao/wallet aqui.
+    const stopTimer = wagerTransactionProcessingDurationSeconds.startTimer({ source: 'http' });
+    let outcome: 'success' | 'error' = 'success';
+    try {
+      const result = await this.useCase.execute(idempotencyKey, dto, correlationId);
+      res.status(result.httpStatus);
+      return result.body;
+    } catch (error) {
+      outcome = 'error';
+      throw error;
+    } finally {
+      stopTimer({ outcome });
+    }
   }
 
   @Get('transactions/:transactionId')

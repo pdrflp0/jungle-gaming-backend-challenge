@@ -4,6 +4,7 @@ import { ScheduleModule } from '@nestjs/schedule';
 import mikroOrmConfig from '../mikro-orm.config';
 import { HealthModule } from './health/health.module';
 import { MessagingModule } from './messaging/messaging.module';
+import { MetricsModule } from './metrics/metrics.module';
 import { WageringModule } from './wagering/wagering.module';
 import { WalletsModule } from './wallets/wallets.module';
 
@@ -15,6 +16,7 @@ import { WalletsModule } from './wallets/wallets.module';
     WageringModule,
     MessagingModule,
     HealthModule,
+    MetricsModule,
   ],
   controllers: [],
   providers: [],

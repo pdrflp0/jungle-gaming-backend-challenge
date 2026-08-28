@@ -13,5 +13,10 @@ import { HealthController } from './health.controller';
 @Module({
   controllers: [HealthController],
   providers: [{ provide: SQSClient, useFactory: () => createSqsClient() }],
+  // Exportado para o MetricsModule reutilizar o MESMO cliente (DLQ depth) em
+  // vez de abrir um segundo SQSClient so para isso — HealthController segue
+  // sendo o unico dono do ciclo de vida (onApplicationShutdown chama
+  // sqsClient.destroy() so aqui).
+  exports: [SQSClient],
 })
 export class HealthModule {}

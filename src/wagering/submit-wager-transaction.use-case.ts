@@ -11,6 +11,7 @@ import { DeadlockException, LockWaitTimeoutException, UniqueConstraintViolationE
 import { EntityManager } from '@mikro-orm/postgresql';
 import { InvalidMoneyAmountError, InvalidMoneyCurrencyError, Money, MoneyAmountOverflowError } from '../domain/money/money';
 import { OutboxMessage } from '../domain/messaging/outbox-message';
+import { wagerLockConflictsTotal } from '../observability/metrics';
 import {
   WagerTransactionPendingReference,
   WagerTransactionProcessed,
@@ -78,6 +79,7 @@ export class SubmitWagerTransactionUseCase {
       return await this.run(idempotencyKey, dto, correlationId);
     } catch (error) {
       if (error instanceof DeadlockException || error instanceof LockWaitTimeoutException) {
+        wagerLockConflictsTotal.inc({ type: error instanceof DeadlockException ? 'deadlock' : 'lock_timeout' });
         throw new ServiceUnavailableException('Temporary database contention, please retry');
       }
       throw error;
